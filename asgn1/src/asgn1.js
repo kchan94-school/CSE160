@@ -49,6 +49,16 @@ let g_brushMode = "drag";
 
 
 // =================== Shape Classes ===================
+class Point {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+  }
+
+  toArray() {
+    return [this.x, this.y];
+  }
+}
 class Triangle {
   constructor(position, color, size, angleDeg) {
     this.position = position;
@@ -61,7 +71,7 @@ class Triangle {
     gl.uniform4f(u_FragColor, ...this.color);
     gl.uniform1f(u_PointSize, 1.0);
 
-    const [cx, cy] = this.position;
+    const [cx, cy] = posToArray(this.position);
     const d = sizeToClip(this.size);
     const rad = (this.angleDeg * Math.PI) / 180;
 
@@ -97,7 +107,7 @@ class Square {
     gl.uniform4f(u_FragColor, ...this.color);
     gl.uniform1f(u_PointSize, 1.0);
 
-    const [cx, cy] = this.position;
+    const [cx, cy] = posToArray(this.position);
     const d = sizeToClip(this.size);
     const rad = (this.angleDeg * Math.PI) / 180;
 
@@ -141,7 +151,7 @@ class Circle {
     gl.uniform4f(u_FragColor, ...this.color);
     gl.uniform1f(u_PointSize, 1.0);
 
-    const [cx, cy] = this.position;
+    const [cx, cy] = posToArray(this.position);
     const r = sizeToClip(this.size);
 
     // Triangle fan: center + ring points
@@ -351,26 +361,31 @@ function renderAllShapes() {
 }
 
 // Handles click OR drag paint event
-function click(ev) {
+function handleClicks(ev) {
   const [x, y] = convertEventToGL(ev);
+  const p = new Point(x, y);
 
   const color = [...g_selectedColor];
   const size = g_selectedSize;
 
   if (g_selectedType === "square") {
-    addShape(new Square([x, y], color, size, g_selectedAngleDeg));
-    } else if (g_selectedType === "triangle") {
-    addShape(new Triangle([x, y], color, size, g_selectedAngleDeg));
-    } else {
-    addShape(new Circle([x, y], color, size, g_selectedSegments));
-    }
-
+    addShape(new Square(p, color, size, g_selectedAngleDeg));
+  } else if (g_selectedType === "triangle") {
+    addShape(new Triangle(p, color, size, g_selectedAngleDeg));
+  } else { // circle
+    addShape(new Circle(p, color, size, g_selectedSegments));
+  }
 
   renderAllShapes();
 }
 
 
+
 // =================== Helpers ===================
+function posToArray(pos) {
+  return (pos instanceof Point) ? pos.toArray() : pos;
+}
+
 function convertEventToGL(ev) {
   const rect = ev.target.getBoundingClientRect();
   const mx = ev.clientX - rect.left;
@@ -593,7 +608,7 @@ function main() {
     g_isDragging = true;
 
     // Always draw once on mousedown
-    click(ev);
+    handleClicks(ev);
     renderAllShapes();
 
     // If click-only mode, finalize action immediately
@@ -608,7 +623,7 @@ function main() {
     if (g_brushMode !== "drag") return;
     if (ev.buttons !== 1) return;
 
-    click(ev);
+    handleClicks(ev);
     };
 
     canvas.onmouseup = () => {
