@@ -229,13 +229,31 @@ function drawMyPicture() {
   addRectAsTwoTris(-1, -1, 1, 1, [0.05, 0.07, 0.10, 1.0]);
 
   // Ground strip
-  addRectAsTwoTris(-1, -1, 1, -0.4, [0.08, 0.12, 0.08, 1.0]);
+  let ground_color = [0.21, 0.31, 0.13, 1.0];
+  addRectAsTwoTris(-1, -1, 1, -0.4, ground_color);
+
+  // Road 
+  let road_color = [0.41, 0.38, 0.27, 1.0];
+  let rp = [0.0, -0.3]; // road peak (of triangle)
+  addTri(rp[0], rp[1], rp[0]-0.3, -1.0, rp[1]+0.6, -1.0, road_color);
+
 
   // Mountain (big triangle)
-  addTri(-0.9, -0.4, -0.2, 0.6, 0.5, -0.4, [0.18, 0.22, 0.28, 1.0]);
+  let big_mount_color = [0.18, 0.22, 0.28, 1.0];
+  addTri(-0.7, -0.4, 0.0, 0.6, 0.7, -0.4, big_mount_color);
 
-  // Snow cap (smaller triangle on top)
-  addTri(-0.25, 0.45, -0.08, 0.6, 0.10, 0.40, [0.85, 0.88, 0.92, 1.0]);
+  // Snow cap 1 (smaller triangle on top)
+  let snow_cap_color = [0.85, 0.88, 0.92, 1.0];
+  addTri(-0.11, 0.45, -0.0, 0.6, 0.11, 0.45, snow_cap_color);
+
+  // Side Mountain (big tri)
+  let side_mount_color = [0.27, 0.23, 0.19, 1.0];
+  let p = [0.4, 0.3] // peak coordinate for side mountain
+  addTri(-0.2, -0.4, 0.9, -0.4, p[0], p[1], side_mount_color);
+
+  // Snow cap 2 (small tri)
+  addTri(p[0], p[1], p[0]-0.19, p[1]-0.2, p[0]+0.15, p[1]-0.2, snow_cap_color);
+  // addTri(0.0, 0.0, -0.3, -0.2, 0.2, 0.2, snow_cap_color);
 
   // Sun as triangle-fan slices
   addCircleFan(0.7, 0.7, 0.18, 18, [0.95, 0.75, 0.15, 1.0]);
@@ -269,13 +287,11 @@ function drawInitialsTemplate_KC() {
   // K: vertical bar (rectangle)
   addRectAsTwoTris(-0.90, -0.30, -0.84, 0.10, c);
 
-  // K: upper diagonal (two triangles forming a thin quad)
-  addTri(-0.84, -0.02, -0.70, 0.10, -0.78, 0.02, c);
-  addTri(-0.84, -0.02, -0.70, 0.10, -0.76, -0.06, c);
+  // K: upper diagonal
+  addTri(-0.89, -0.1, -0.70, 0.10, -0.77, -0.1, c);
 
   // K: lower diagonal
-  addTri(-0.84, -0.02, -0.70, -0.30, -0.78, -0.10, c);
-  addTri(-0.84, -0.02, -0.70, -0.30, -0.76, -0.22, c);
+  addTri(-0.89, -0.1, -0.70, -0.30, -0.77, -0.1, c);
 
   // C: chunky arc made from fan slices with a "cutout" illusion
   addCircleFan(-0.52, -0.10, 0.18, 20, c);
