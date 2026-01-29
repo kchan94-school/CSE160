@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>CSE160 Asgn2</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; }
+    .row { margin: 8px 0; display:flex; gap:12px; align-items:center; }
+    label { width: 160px; }
+    canvas { border: 1px solid #444; }
+    .small { color:#444; font-size: 0.95em; }
+  </style>
+
+  <!-- Adjust these paths if your lib filenames differ -->
+  <script src="lib/cuon-utils.js"></script>
+  <script src="lib/cuon-matrix.js"></script>
+  <script src="lib/webgl-utils.js"></script>
+  <script src="lib/webgl-debug.js"></script>
+
+  <script src="asgn2.js"></script>
+</head>
+
+<body onload="main()">
+  <h2>Assignment 2</h2>
+
+  <div class="row">
+    <canvas id="webgl" width="400" height="400">
+      Please use a browser that supports canvas.
+    </canvas>
+
+    <div>
+      <div id="fps" class="small">FPS: --</div>
+      <div id="ms" class="small">MS: --</div>
+    </div>
+  </div>
+
+  <div class="row">
+    <label>Global Rotation</label>
+    <input id="globalRotSlider" type="range" min="-180" max="180" step="1" value="0" />
+    <span id="globalRotVal">0</span>
+  </div>
+
+  <div class="row">
+    <label>Elevation (Pitch)</label>
+    <input id="elevationSlider" type="range" min="-89" max="89" step="1" value="0" />
+    <span id="elevationVal">0</span>
+  </div>
+
+  <div class="row">
+    <label>Thigh Angle</label>
+    <input id="thighSlider" type="range" min="-90" max="90" step="1" value="20" />
+    <span id="thighVal">20</span>
+  </div>
+
+  <div class="row">
+    <label>Calf Angle</label>
+    <input id="calfSlider" type="range" min="-90" max="90" step="1" value="-20" />
+    <span id="calfVal">-20</span>
+  </div>
+
+  <div class="row">
+    <label>Foot Angle</label>
+    <input id="footSlider" type="range" min="-90" max="90" step="1" value="10" />
+    <span id="footVal">10</span>
+  </div>
+
+  <div class="row">
+    <label>Neck Bend</label>
+    <input id="neckSlider" type="range" min="-45" max="45" step="1" value="15" />
+    <span id="neckVal">15</span>
+  </div>
+
+  <div class="row">
+    <label>Wing Flap</label>
+    <input id="wingSlider" type="range" min="-90" max="90" step="1" value="10" />
+    <span id="wingVal">10</span>
+  </div>
+
+  <div class="row">
+    <label>Feathers</label>
+      <input id="featherSlider" type="range" min="3" max="36" step="1" value="18">
+    <span id="featherVal">18</span>
+  </div>
+
+  <div class="row">
+    <label>Tail Fan</label>
+    <input id="tailSlider" type="range" min="0" max="240" step="1" value="45" />
+    <span id="tailVal">45</span>
+  </div>
+
+  <div class="row">
+    <button id="animOn">Animation ON</button>
+    <button id="animOff">Animation OFF</button>
+  </div>
+
+  <p class="small">Shift + Click on the canvas to trigger the poke animation.</p>
+
+  <p class="small">
+    Tip: If you get a blank screen, check your console for shader compile errors and confirm your lib filenames match.
+  </p>
+</body>
+</html>
