@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>ASG3 - Voxel World</title>
+    <style>
+      body { margin: 0; overflow: hidden; background: #111; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      #hud {
+        position: fixed; left: 12px; top: 12px;
+        color: white; font-family: monospace; font-size: 13px;
+        background: rgba(0,0,0,0.35); padding: 8px 10px; border-radius: 8px;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="hud">
+      WASD move • Q/E turn • Mouse look (click canvas) <br/>
+      (Hook later) Left click: remove • Right click: add
+    </div>
+
+    <canvas id="webgl"></canvas>
+
+    <!-- libs -->
+    <script src="src/lib/webgl-utils.js"></script>
+    <script src="src/lib/webgl-debug.js"></script>
+    <script src="src/lib/cuon-utils.js"></script>
+    <script src="src/lib/cuon-matrix.js"></script>
+
+    <!-- main -->
+    <script src="src/asgn3.js"></script>
+  </body>
+</html>
