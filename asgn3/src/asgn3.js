@@ -29,7 +29,8 @@ const FSHADER_SOURCE = `
   uniform sampler2D u_Sampler2;  // texture unit 2
   uniform sampler2D u_Sampler3;  // texture unit 3
   uniform int u_WhichTex;        // 0 .. 3
-
+  uniform vec3 u_LightRGB;
+  uniform float u_Unlit; // 1.0 = do NOT apply lighting
   varying vec2 v_UV;
 
   void main() {
@@ -41,7 +42,12 @@ const FSHADER_SOURCE = `
 
 
     float t = clamp(u_TexWeight, 0.0, 1.0);
-    gl_FragColor = (1.0 - t) * u_BaseColor + t * texColor;
+    vec4 base = (1.0 - t) * u_BaseColor + t * texColor;
+
+    // apply global light (affects BOTH textured + base-color objects)
+    base.rgb *= mix(u_LightRGB, vec3(1.0), clamp(u_Unlit, 0.0, 1.0));
+
+    gl_FragColor = base;
   }
 `;
 
@@ -52,6 +58,8 @@ let a_Position, a_UV;
 let u_ModelMatrix, u_ViewMatrix, u_ProjectionMatrix;
 let u_BaseColor, u_TexWeight, u_WhichTex;
 let u_Sampler0, u_Sampler1, u_Sampler2, u_Sampler3;
+let u_LightRGB;
+let u_Unlit;
 
 let camera;
 
@@ -60,8 +68,27 @@ let invertMouseY = true; // typical FPS: mouse up looks up
 
 let lastMouseT = 0;
 
-let gSelectedBlock = 0; // 0=wall, 1=grass, 2=stone (matches u_WhichTex)
+let gSelectedBlock = 0; // 0=wall, 1=grass, 2=stone, 3=dirt (matches u_WhichTex)
 let blockType = null;   // blockType[z][x][y] = 0..2
+
+
+// ===== FPS meter =====
+let fpsFrames = 0;
+let fpsLastTime = performance.now();
+
+
+// ===== Day/Night Mode =====
+// 0 = cycle, 1 = fixed day, 2 = fixed night
+let g_dayMode = 0;
+
+let g_dayPhase = 0;
+let g_sun01 = 1.0;          // 0..1 brightness
+let g_lightRGB = [1, 1, 1]; // global light multiplier
+
+// ===== Stars =====
+let g_stars = [];           // array of {x,y,z, size}
+const STAR_COUNT = 220;
+
 
 // ===== Hotbar / block selection =====
 const BLOCKS = [
@@ -237,9 +264,6 @@ function updateVerticalPhysics(dtScale) {
   camera.updateView();
 }
 
-
-
-
 // =================== Camera ===================
 class Camera {
   constructor() {
@@ -307,7 +331,6 @@ class Camera {
     return f;
   }
 
-
   // --- Movement (use yaw only, stay on XZ plane) ---
   forwardDirXZ() {
     const yaw = (this.yawDeg * Math.PI) / 180;
@@ -360,8 +383,6 @@ class Camera {
         }
       }
 
-
-
       // height-aware occupancy test (your canOccupyAt)
       if (!canOccupyAt(tgtCX, tgtCZ, newEyeY)) return false;
 
@@ -386,8 +407,6 @@ class Camera {
     // Then along Z (using possibly updated X)
     attemptMoveTo(this.eye.elements[0], ez + dz);
   }
-
-
 
   moveForward(speed = 0.15) {
     const f = this.forwardDirXZ();
@@ -429,12 +448,10 @@ class Camera {
     this.updateView();
   }
 
-
 }
 
-
 // =================== Cube Geometry (pos + uv) ===================
-// Unit cube centered at origin? Easiest is a cube from (0,0,0) to (1,1,1) then you translate via modelMatrix.
+// Unit cube centered at origin. Easiest is a cube from (0,0,0) to (1,1,1) then you translate via modelMatrix.
 // Here: cube in [0,1]^3 with UVs per face.
 class CubeMesh {
   constructor() {
@@ -814,6 +831,87 @@ function raycastGroundPlane(yPlane = 0.0, maxDist = 7.0) {
 
 // ===== Helpers ====
 
+function initStars() {
+  g_stars = [];
+  // Stars placed on an inner shell of your skybox
+  for (let i = 0; i < STAR_COUNT; i++) {
+    // random direction on sphere
+    let x = Math.random() * 2 - 1;
+    let y = Math.random() * 2 - 1;
+    let z = Math.random() * 2 - 1;
+    const len = Math.hypot(x, y, z) || 1;
+    x /= len; y /= len; z /= len;
+
+    // Bias toward upper hemisphere a bit (looks better)
+    if (y < -0.2) y = -0.2;
+
+    // star size variation
+    const size = 0.7 + Math.random() * 1.4;
+
+    g_stars.push({ x, y, z, size });
+  }
+}
+
+function updateHudModeLine() {
+  const modeEl = document.getElementById("modeLine");
+  if (!modeEl) return;
+
+  const modeName = (g_dayMode === 0) ? "AUTO" : (g_dayMode === 1) ? "DAY" : "NIGHT";
+  modeEl.textContent = `T: Day/Night/Auto • Mode: ${modeName}`;
+}
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+function clamp01(t) { return Math.max(0, Math.min(1, t)); }
+
+function computeLightingFromSun(sun) {
+  // sun in [0,1]
+  // Make nights darker than linear:
+  g_sun01 = Math.pow(clamp01(sun), 1.6);
+
+  const dayRGB   = [1.00, 1.00, 1.00];
+  const duskRGB  = [1.00, 0.72, 0.55];
+  const nightRGB = [0.25, 0.30, 0.45];
+
+  // dusk factor peaks near horizon
+  const dusk = 1.0 - Math.abs(2.0 * sun - 1.0);
+  const duskW = Math.pow(dusk, 2.0) * (1.0 - g_sun01);
+
+  const base = [
+    lerp(nightRGB[0], dayRGB[0], g_sun01),
+    lerp(nightRGB[1], dayRGB[1], g_sun01),
+    lerp(nightRGB[2], dayRGB[2], g_sun01),
+  ];
+
+  g_lightRGB = [
+    clamp01(base[0] + duskRGB[0] * duskW * 0.35),
+    clamp01(base[1] + duskRGB[1] * duskW * 0.25),
+    clamp01(base[2] + duskRGB[2] * duskW * 0.15),
+  ];
+}
+
+function updateDayNight(dtScale) {
+  if (g_dayMode === 1) {
+    // Fixed DAY
+    computeLightingFromSun(1.0);
+    return;
+  }
+  if (g_dayMode === 2) {
+    // Fixed NIGHT
+    computeLightingFromSun(0.0);
+    return;
+  }
+
+  // AUTO cycle
+  const speed = 0.0035; // adjust if you want
+  g_dayPhase += dtScale * speed;
+
+  // sin [-1,1] -> [0,1]
+  const sun = 0.5 + 0.5 * Math.sin(g_dayPhase);
+
+  computeLightingFromSun(sun);
+}
+
+
 function highestSolidYBelowFeet(x, z, feetY) {
   if (!inBoundsXZ(x, z)) return -1;
 
@@ -905,10 +1003,6 @@ function pickBlockFromLook() {
   const tex = blockType[hit.z][hit.x][hit.y] | 0; // 0..3
   setSelectedBlockByTex(tex);
 }
-
-
-
-
 
 // =================== Texture Loading ===================
 function isPowerOf2(v) { return (v & (v - 1)) === 0; }
@@ -1027,6 +1121,12 @@ function setupInput() {
     if (k === "2") setSelectedBlock(1);
     if (k === "3") setSelectedBlock(2);
     if (k === "4") setSelectedBlock(3);
+
+    if (k === "t") {
+      g_dayMode = (g_dayMode + 1) % 3; // AUTO->DAY->NIGHT->AUTO
+      updateHudModeLine();
+    }
+
   });
 
   window.addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
@@ -1119,7 +1219,7 @@ function setupInput() {
     e.stopPropagation();
   });
 
-
+  updateHudModeLine();
 
 }
 
@@ -1148,8 +1248,12 @@ function handleKeys(dtScale) {
 
 // =================== Rendering ===================
 function drawScene() {
+  
   gl.bindBuffer(gl.ARRAY_BUFFER, cubeMesh.vbo);
   const FSIZE = Float32Array.BYTES_PER_ELEMENT;
+
+  gl.uniform3f(u_LightRGB, g_lightRGB[0], g_lightRGB[1], g_lightRGB[2]);
+  gl.uniform1f(u_Unlit, 0.0);
 
   gl.vertexAttribPointer(a_Position, 3, gl.FLOAT, false, 5 * FSIZE, 0);
   gl.enableVertexAttribArray(a_Position);
@@ -1179,12 +1283,73 @@ function drawScene() {
     m.translate(cx - S/2, cy - S/2, cz - S/2);
     m.scale(S, S, S);
 
-    cubeMesh.draw(m, { baseColor:[0.25,0.55,0.95,1], texWeight:0.0, whichTex:0 });
+    // day sky vs night sky
+    const daySky   = [0.25, 0.55, 0.95, 1.0];
+    const nightSky = [0.02, 0.03, 0.08, 1.0];
 
+    // a little brighter than ground lighting
+    const t = clamp01(g_sun01 * 1.15);
+
+    const sky = [
+      lerp(nightSky[0], daySky[0], t),
+      lerp(nightSky[1], daySky[1], t),
+      lerp(nightSky[2], daySky[2], t),
+      1.0
+    ];
+
+    cubeMesh.draw(m, { baseColor: sky, texWeight: 0.0, whichTex: 0 });
+
+    // ---- STARS (fade in at night) ----
+    
+    // how visible are stars? (0 day, 1 night)
+    const night = clamp01(1.0 - g_sun01);
+    const starAlpha = Math.pow(night, 2.2); // stronger at night
+
+    if (starAlpha > 0.01) {
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+      // Put stars on an inner shell of skybox
+      const cx = WORLD_W * 0.5;
+      const cz = WORLD_D * 0.5;
+      const cy = 2.0;
+
+      const S = Math.max(WORLD_W, WORLD_D) * 40;
+      const R = S * 0.45; // inside sky cube
+
+      // reuse one matrix to avoid allocations
+      const Ms = new Matrix4();
+
+      gl.uniform1f(u_Unlit, 1.0);
+
+      for (let i = 0; i < g_stars.length; i++) {
+        const st = g_stars[i];
+
+        Ms.setIdentity();
+        Ms.translate(
+          cx + st.x * R,
+          cy + st.y * R,
+          cz + st.z * R
+        );
+
+        // small cube “star”
+        const s = st.size;
+        Ms.scale(s, s, s);
+
+        cubeMesh.draw(Ms, {
+          baseColor: [1.0, 1.0, 1.0, starAlpha],
+          texWeight: 0.0,
+          whichTex: 0
+        });
+      }
+
+      gl.uniform1f(u_Unlit, 0.0);
+
+      gl.disable(gl.BLEND);
+    }
+  
     gl.depthMask(true);
   }
-
-
 
   // --- GROUND ---
   // Flattened cube as a plane; optionally textured
@@ -1200,9 +1365,10 @@ function drawScene() {
     });
   }
 
-
   // --- WALLS from voxel masks ---
   const wallTexReady = textures.ready0 || textures.ready1 || textures.ready2 || textures.ready3;
+
+  const mBlock = new Matrix4(); // REUSE: one matrix for all blocks
 
   for (let z = 0; z < WORLD_D; z++) {
     for (let x = 0; x < WORLD_W; x++) {
@@ -1212,19 +1378,18 @@ function drawScene() {
       for (let y = 0; y < MAX_H; y++) {
         if ((mask & (1 << y)) === 0) continue;
 
-        const m = new Matrix4();
-        m.translate(x, y, z);
+        mBlock.setIdentity();
+        mBlock.translate(x, y, z);
 
-        const t = blockType[z][x][y]; // 0..2
+        const t = blockType[z][x][y] | 0; // 0..3
 
-        // only use texture if that sampler is ready
         const texReady =
           (t === 0 && textures.ready0) ||
           (t === 1 && textures.ready1) ||
           (t === 2 && textures.ready2) ||
           (t === 3 && textures.ready3);
 
-        cubeMesh.draw(m, {
+        cubeMesh.draw(mBlock, {
           baseColor: [0.75, 0.75, 0.75, 1.0],
           texWeight: texReady ? 1.0 : 0.0,
           whichTex: t
@@ -1232,8 +1397,6 @@ function drawScene() {
       }
     }
   }
-
-
 
   // --- ANIMAL in the world ---
   {
@@ -1255,7 +1418,6 @@ function drawScene() {
     drawAnimalInWorld(M);
   }
 
-
 }
 
 // =================== Main Loop ===================
@@ -1268,6 +1430,8 @@ function tick(now = performance.now()) {
 
   const dtScale = dtMs / REF_DT; // 1.0 at 60fps
 
+  updateDayNight(dtScale);
+
   handleKeys(dtScale);
   updateVerticalPhysics(dtScale);
 
@@ -1277,6 +1441,19 @@ function tick(now = performance.now()) {
   }
 
   drawScene();
+  
+  // ===== FPS update (twice per second) =====
+  fpsFrames++;
+  const nowFps = performance.now();
+  if (nowFps - fpsLastTime > 500) {
+    const fps = (fpsFrames * 1000) / (nowFps - fpsLastTime);
+    fpsFrames = 0;
+    fpsLastTime = nowFps;
+    
+    const fpsEl = document.getElementById("fpsLine");
+    if (fpsEl) fpsEl.textContent = `FPS: ${fps.toFixed(1)}`;
+  }
+  
   requestAnimationFrame(tick);
 }
 
@@ -1527,7 +1704,6 @@ function drawAnimalInWorld(worldM) {
   }
 }
 
-
 // =================== Resize ===================
 function resizeCanvasToDisplaySize() {
   const dpr = window.devicePixelRatio || 1;
@@ -1581,10 +1757,14 @@ function main() {
   u_Sampler2 = gl.getUniformLocation(gl.program, "u_Sampler2");
   u_Sampler3 = gl.getUniformLocation(gl.program, "u_Sampler3");
 
+  u_LightRGB = gl.getUniformLocation(gl.program, "u_LightRGB");
+  u_Unlit = gl.getUniformLocation(gl.program, "u_Unlit");
+
   // camera + geometry
   camera = new Camera();
   cubeMesh = new CubeMesh();
 
+  initStars();
   createHotbarUI();
   setSelectedBlock(0); // default
 
