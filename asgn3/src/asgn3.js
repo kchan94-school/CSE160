@@ -26,14 +26,19 @@ const FSHADER_SOURCE = `
   uniform float u_TexWeight;     // 0 = base color, 1 = texture
   uniform sampler2D u_Sampler0;  // texture unit 0
   uniform sampler2D u_Sampler1;  // texture unit 1
-  uniform int u_WhichTex;        // 0 -> sampler0, 1 -> sampler1
+  uniform sampler2D u_Sampler2;  // texture unit 2
+  uniform sampler2D u_Sampler3;  // texture unit 3
+  uniform int u_WhichTex;        // 0 .. 3
 
   varying vec2 v_UV;
 
   void main() {
-    vec4 texColor = (u_WhichTex == 0)
-      ? texture2D(u_Sampler0, v_UV)
-      : texture2D(u_Sampler1, v_UV);
+    vec4 texColor =
+      (u_WhichTex == 0) ? texture2D(u_Sampler0, v_UV) :
+      (u_WhichTex == 1) ? texture2D(u_Sampler1, v_UV) :
+      (u_WhichTex == 2) ? texture2D(u_Sampler2, v_UV) :
+                          texture2D(u_Sampler3, v_UV);
+
 
     float t = clamp(u_TexWeight, 0.0, 1.0);
     gl_FragColor = (1.0 - t) * u_BaseColor + t * texColor;
@@ -46,7 +51,7 @@ let canvas, gl;
 let a_Position, a_UV;
 let u_ModelMatrix, u_ViewMatrix, u_ProjectionMatrix;
 let u_BaseColor, u_TexWeight, u_WhichTex;
-let u_Sampler0, u_Sampler1;
+let u_Sampler0, u_Sampler1, u_Sampler2, u_Sampler3;
 
 let camera;
 
@@ -55,21 +60,68 @@ let invertMouseY = true; // typical FPS: mouse up looks up
 
 let lastMouseT = 0;
 
+let gSelectedBlock = 0; // 0=wall, 1=grass, 2=stone (matches u_WhichTex)
+let blockType = null;   // blockType[z][x][y] = 0..2
+
+// ===== Hotbar / block selection =====
+const BLOCKS = [
+  { name: "Wall",  tex: 0 },
+  { name: "Grass", tex: 1 },
+  { name: "Stone", tex: 2 },
+  { name: "Dirt",  tex: 3 },
+];
+
+let hotbarEl = null;
+
 
 // world constants
 const WORLD_W = 32;
 const WORLD_D = 32;
-const MAX_H = 12;
+const MAX_H = 4;
 
 // textures
 const textures = {
   ready0: false,
-  ready1: false
+  ready1: false,
+  ready2: false,
+  ready3: false
 };
 
 // input
 const keys = Object.create(null);
 let pointerLocked = false;
+
+// =================== Animal (ported from asgn2) ===================
+let g_seconds = 0;
+let g_startTime = performance.now();
+let gAnimateAnimal = true;
+
+// (same variables you used)
+let gThighAngle = 20;
+let gCalfAngle  = -20;
+let gFootAngle  = 10;
+let gNeckAngle = 15;
+let gWingAngle = 10;
+let gTailSpread = 180;
+let gFeatherCount = 10;
+
+// poke animation
+let gPokeUntil = 0;
+let gPokeStart = 0;
+let gPokeDuration = 1.25;
+
+// extras used in poke
+let gBodyPitch = 0;
+let gBodyDrop  = 0;
+let gWinkL = 0;
+let gWinkR = 0;
+
+function triggerPoke() {
+  gPokeStart = g_seconds;
+  gPokeDuration = 1.25;
+  gPokeUntil = gPokeStart + gPokeDuration;
+}
+
 
 // =================== Player physics ===================
 let lastFrameT = performance.now();
@@ -94,7 +146,15 @@ function updateVerticalPhysics(dtScale) {
   const cx = Math.floor(ex);
   const cz = Math.floor(ez);
 
-  const groundY = groundLevelAt(cx, cz) + EYE_HEIGHT;
+  if (!inBoundsXZ(cx, cz)) {
+    // If you ever allow leaving bounds, handle it here.
+    return;
+  }
+
+  // Save old span for swept collision
+  const oldEyeY  = camera.eye.elements[1];
+  const oldFeetY = oldEyeY - EYE_HEIGHT;
+  const oldHeadY = oldFeetY + PLAYER_HEIGHT;
 
   // gravity (scaled)
   velY += GRAVITY * dtScale;
@@ -103,20 +163,80 @@ function updateVerticalPhysics(dtScale) {
   // integrate (scaled)
   camera.eye.elements[1] += velY * dtScale;
 
-  // (If you added ceiling collision earlier, call it here too)
+  const newEyeY  = camera.eye.elements[1];
+  const newFeetY = newEyeY - EYE_HEIGHT;
+  const newHeadY = newFeetY + PLAYER_HEIGHT;
 
-  // ground collision
-  if (camera.eye.elements[1] <= groundY) {
-    camera.eye.elements[1] = groundY;
-    velY = 0.0;
-    onGround = true;
-  } else {
-    onGround = false;
+  // ---- Swept ceiling collision (prevents "leaping through" from below) ----
+  if (velY > 0) {
+    // Check any voxel we crossed into in [oldHeadY, newHeadY]
+    const yStart = Math.max(0, Math.floor(oldHeadY + 1e-4));
+    const yEnd   = Math.min(MAX_H - 1, Math.floor(newHeadY - 1e-4));
+
+    for (let y = yStart; y <= yEnd; y++) {
+      if (hasBlock(cx, y, cz)) {
+        // Ceiling bottom is at y, so clamp head to y
+        const clampedHeadY = y;
+        const clampedFeetY = clampedHeadY - PLAYER_HEIGHT;
+        const clampedEyeY  = clampedFeetY + EYE_HEIGHT;
+
+        camera.eye.elements[1] = clampedEyeY;
+        velY = 0.0;
+        break;
+      }
+    }
+  }
+
+  // Recompute after potential ceiling clamp
+  const eyeY  = camera.eye.elements[1];
+  const feetY = eyeY - EYE_HEIGHT;
+
+  // ---- Swept floor collision (prevents falling through platforms) ----
+  // Find the highest floor surface we crossed downward onto.
+  // We only need sweep when falling / moving down.
+  onGround = false;
+
+  if (velY <= 0) {
+    // We want blocks whose top (y+1) is between newFeetY and oldFeetY.
+    // Iterate candidate blocks from near oldFeet downward.
+    const yMax = Math.min(MAX_H - 1, Math.floor(oldFeetY - 1e-4));
+    const yMin = Math.max(0, Math.floor(feetY - 1e-4));
+
+    let landedSurface = null;
+
+    for (let y = yMax; y >= yMin; y--) {
+      if (!hasBlock(cx, y, cz)) continue;
+      const top = y + 1;
+
+      // Did feet cross below this top this frame?
+      if (top <= oldFeetY + EPS && top >= feetY - EPS) {
+        landedSurface = top;
+        break; // highest such surface
+      }
+    }
+
+    // If we didn't cross any, still allow resting on the best floor under current feet
+    if (landedSurface === null) {
+      landedSurface = floorSurfaceAt(cx, cz, feetY + EPS);
+    }
+
+    // Clamp to floor if below it
+    if (feetY < landedSurface) {
+      camera.eye.elements[1] = landedSurface + EYE_HEIGHT;
+      velY = 0.0;
+      onGround = true;
+    } else {
+      // On ground if very close and not moving vertically
+      if (Math.abs(feetY - landedSurface) < 1e-3 && Math.abs(velY) < 1e-6) {
+        onGround = true;
+      }
+    }
   }
 
   camera.recomputeAt();
   camera.updateView();
 }
+
 
 
 
@@ -132,13 +252,6 @@ class Camera {
     // --- Look angles (source of truth) ---
     this.yawDeg = -90;
     this.pitchDeg = 0;
-
-    // --- Smoothing targets ---
-    this.yawTarget = this.yawDeg;
-    this.pitchTarget = this.pitchDeg;
-
-    // smoothing factor (0..1). higher = snappier, lower = smoother
-    this.lookSmoothing = 0.22;
 
     this.at  = new Vector3([16, 2, 27]);
 
@@ -170,7 +283,7 @@ class Camera {
 
   updateProjection() {
     const aspect = canvas.width / canvas.height;
-    this.projectionMatrix.setPerspective(this.fov, aspect, 0.1, 1000);
+    this.projectionMatrix.setPerspective(this.fov, aspect, 0.1, 1500);
   }
 
   updateView() {
@@ -179,39 +292,6 @@ class Camera {
     const u = this.up.elements;
     this.viewMatrix.setLookAt(e[0], e[1], e[2], a[0], a[1], a[2], u[0], u[1], u[2]);
   }
-
-  // --- Look controls ---
-  addLookDelta(deltaYawDeg, deltaPitchDeg) {
-    this.yawTarget += deltaYawDeg;
-    this.pitchTarget += deltaPitchDeg;
-
-    const limit = 89.0;
-    if (this.pitchTarget > limit) this.pitchTarget = limit;
-    if (this.pitchTarget < -limit) this.pitchTarget = -limit;
-  }
-
-  // Small helper: wrap an angle difference to [-180, 180)
-  static shortestAngleDelta(targetDeg, currentDeg) {
-    let d = targetDeg - currentDeg;
-    d = ((d + 180) % 360 + 360) % 360 - 180;
-    return d;
-  }
-
-  // Call once per frame for smoothing
-  updateLook(dtScale) {
-    // Convert “per-frame smoothing” to dt-based:
-    // if lookSmoothing = 0.22 at 60fps, then per-dt alpha is:
-    const a = 1 - Math.pow(1 - this.lookSmoothing, dtScale);
-
-    const dyaw = Camera.shortestAngleDelta(this.yawTarget, this.yawDeg);
-    this.yawDeg += dyaw * a;
-
-    this.pitchDeg = this.pitchDeg + (this.pitchTarget - this.pitchDeg) * a;
-
-    this.recomputeAt();
-    this.updateView();
-  }
-
 
   forwardDir() {
     // full forward from yaw/pitch (same math as recomputeAt)
@@ -255,24 +335,49 @@ class Camera {
 
       if (tgtCX < 0 || tgtCX >= WORLD_W || tgtCZ < 0 || tgtCZ >= WORLD_D) return false;
 
-      const curGround = groundLevelAt(curCX, curCZ);
-      const tgtGround = groundLevelAt(tgtCX, tgtCZ);
+      const curFeet = this.eye.elements[1] - EYE_HEIGHT;
+
+      // What floor are we currently standing on (below our feet)?
+      const curFloor = floorSurfaceAt(curCX, curCZ, curFeet + EPS);
+
+      // When stepping, only consider floors up to STEP_HEIGHT above our current feet.
+      const tgtFloor = floorSurfaceAtWithinStep(tgtCX, tgtCZ, curFeet, STEP_HEIGHT);
 
       // too tall to step up
-      if (onGround && (tgtGround - curGround > STEP_HEIGHT)) return false;
+      if (onGround && (tgtFloor - curFloor > STEP_HEIGHT)) return false;
 
       // choose eyeY
       let newEyeY = this.eye.elements[1];
-      if (onGround) newEyeY = tgtGround + EYE_HEIGHT;
+
+      if (onGround) {
+        // Snap UP only (stepping)
+        if (tgtFloor > curFloor + EPS) {
+          newEyeY = tgtFloor + EYE_HEIGHT;
+        } else {
+          // If floor is lower, do NOT snap down.
+          // We keep eyeY and start falling naturally next frames.
+          newEyeY = this.eye.elements[1];
+        }
+      }
+
+
 
       // height-aware occupancy test (your canOccupyAt)
       if (!canOccupyAt(tgtCX, tgtCZ, newEyeY)) return false;
 
       // commit
       this.eye = new Vector3([tx, newEyeY, tz]);
+
+      // If we moved onto a column whose floor is lower than where we were standing,
+      // we should start falling (don't stay "onGround")
+      if (onGround && tgtFloor < curFloor - EPS) {
+        onGround = false;
+      }
+
       this.recomputeAt();
       this.updateView();
       return true;
+
     };
 
     // Try move along X first (keeping Z)
@@ -320,13 +425,10 @@ class Camera {
     if (this.pitchDeg > limit) this.pitchDeg = limit;
     if (this.pitchDeg < -limit) this.pitchDeg = -limit;
 
-    // keep targets in sync so smoothing doesn't "pull" you back
-    this.yawTarget = this.yawDeg;
-    this.pitchTarget = this.pitchDeg;
-
     this.recomputeAt();
     this.updateView();
   }
+
 
 }
 
@@ -380,18 +482,38 @@ class CubeMesh {
     gl.uniform1f(u_TexWeight, (opts && typeof opts.texWeight === "number") ? opts.texWeight : 0);
     gl.uniform1i(u_WhichTex, (opts && typeof opts.whichTex === "number") ? opts.whichTex : 0);
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+    // gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
 
-    const FSIZE = Float32Array.BYTES_PER_ELEMENT;
-    gl.vertexAttribPointer(a_Position, 3, gl.FLOAT, false, 5 * FSIZE, 0);
-    gl.enableVertexAttribArray(a_Position);
+    // const FSIZE = Float32Array.BYTES_PER_ELEMENT;
+    // gl.vertexAttribPointer(a_Position, 3, gl.FLOAT, false, 5 * FSIZE, 0);
+    // gl.enableVertexAttribArray(a_Position);
 
-    gl.vertexAttribPointer(a_UV, 2, gl.FLOAT, false, 5 * FSIZE, 3 * FSIZE);
-    gl.enableVertexAttribArray(a_UV);
+    // gl.vertexAttribPointer(a_UV, 2, gl.FLOAT, false, 5 * FSIZE, 3 * FSIZE);
+    // gl.enableVertexAttribArray(a_UV);
 
     gl.drawArrays(gl.TRIANGLES, 0, this.vertexCount);
   }
 }
+
+function drawColoredCube(M, rgba) {
+  cubeMesh.draw(M, {
+    baseColor: rgba,
+    texWeight: 0.0,   // IMPORTANT: color-only
+    whichTex: 0
+  });
+}
+
+function drawColoredCubeCentered(M, rgba) {
+  // Convert asgn2-style centered-cube transforms to work with a [0,1] cube mesh.
+  const Mc = new Matrix4(M);
+  Mc.translate(-0.5, -0.5, -0.5); // shift cube so its center is at origin
+  cubeMesh.draw(Mc, {
+    baseColor: rgba,
+    texWeight: 0.0,
+    whichTex: 0
+  });
+}
+
 
 let cubeMesh;
 
@@ -458,27 +580,46 @@ let columnMask = null;
 
 function initVoxelsFromHeights() {
   columnMask = Array.from({ length: WORLD_D }, () => new Uint8Array(WORLD_W));
+  blockType  = Array.from({ length: WORLD_D }, () =>
+               Array.from({ length: WORLD_W }, () => new Uint8Array(MAX_H)));
+
   for (let z = 0; z < WORLD_D; z++) {
     for (let x = 0; x < WORLD_W; x++) {
       const h = clamp(worldMap[z][x] | 0, 0, MAX_H);
-      // mask with lowest h bits set: h=0 -> 0, h=4 -> 0b1111
       columnMask[z][x] = (h === 0) ? 0 : ((1 << h) - 1);
+
+      // default wall type for initial world blocks
+      for (let y = 0; y < h; y++) {
+        blockType[z][x][y] = 0; // wall
+      }
     }
   }
 }
+
 
 function hasBlock(x, y, z) {
   if (x < 0 || x >= WORLD_W || z < 0 || z >= WORLD_D || y < 0 || y >= MAX_H) return false;
   return (columnMask[z][x] & (1 << y)) !== 0;
 }
 
-function setBlock(x, y, z, on) {
+function setBlock(x, y, z, on, slotIdx = gSelectedBlock) {
   if (x < 0 || x >= WORLD_W || z < 0 || z >= WORLD_D || y < 0 || y >= MAX_H) return false;
+
   const bit = (1 << y);
   const m = columnMask[z][x];
-  columnMask[z][x] = on ? (m | bit) : (m & ~bit);
+
+  if (on) {
+    columnMask[z][x] = (m | bit);
+
+    const tex = BLOCKS[clamp(slotIdx | 0, 0, BLOCKS.length - 1)].tex;
+    blockType[z][x][y] = clamp(tex | 0, 0, 3); // <-- allow 0..3
+  } else {
+    columnMask[z][x] = (m & ~bit);
+    blockType[z][x][y] = 0;
+  }
   return true;
 }
+
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
@@ -671,19 +812,43 @@ function raycastGroundPlane(yPlane = 0.0, maxDist = 7.0) {
   return { x, y: yPlane, z, t, px, pz };
 }
 
-
-
-
 // ===== Helpers ====
+
+function highestSolidYBelowFeet(x, z, feetY) {
+  if (!inBoundsXZ(x, z)) return -1;
+
+  // We want blocks whose TOP (y+1) is <= feetY
+  // i.e. y <= feetY - 1
+  const yMax = Math.min(MAX_H - 1, Math.floor(feetY - 1e-4));
+  for (let y = yMax; y >= 0; y--) {
+    if (hasBlock(x, y, z)) return y;
+  }
+  return -1;
+}
+
+function floorSurfaceAt(x, z, feetY) {
+  // Returns the Y value of the floor surface the feet should rest on (0 if none)
+  const y = highestSolidYBelowFeet(x, z, feetY);
+  return (y >= 0) ? (y + 1) : 0;
+}
+
+// Used for stepping: find the best floor we can "snap" to that is within reach
+function floorSurfaceAtWithinStep(x, z, feetY, stepHeight) {
+  return floorSurfaceAt(x, z, feetY + stepHeight + EPS);
+}
+
 
 function inBoundsXZ(x, z) {
   return x >= 0 && x < WORLD_W && z >= 0 && z < WORLD_D;
 }
 
-
 function removeBlockOnFace() {
   const hit = raycastVoxel(7.0);
   if (!hit) return;
+
+  // optional: don’t let player remove a block basically inside themselves
+  if (!isAtLeastOneBlockAwayFromVoxel(hit.x, hit.y, hit.z)) return;
+
   setBlock(hit.x, hit.y, hit.z, false);
 }
 
@@ -698,8 +863,10 @@ function addBlockOnFace() {
 
   if (useGround) {
     const px = hitG.x;
-    const py = 0;      // place on ground level
     const pz = hitG.z;
+
+    const topY = highestSolidYInColumn(px, pz);      // -1..3
+    const py = clamp(topY + 1, 0, MAX_H - 1);        // next free slot
 
     if (hasBlock(px, py, pz)) return;
     if (!isAtLeastOneBlockAwayFromVoxel(px, py, pz)) return;
@@ -707,6 +874,7 @@ function addBlockOnFace() {
     setBlock(px, py, pz, true);
     return;
   }
+
 
   // otherwise place adjacent to voxel face (your existing logic)
   if (!hitV) return;
@@ -723,47 +891,163 @@ function addBlockOnFace() {
   setBlock(px, py, pz, true);
 }
 
+function setSelectedBlockByTex(texIdx) {
+  texIdx |= 0;
+  const slot = BLOCKS.findIndex(b => b.tex === texIdx);
+  if (slot >= 0) setSelectedBlock(slot);
+}
+
+function pickBlockFromLook() {
+  const hit = raycastVoxel(7.0);
+  if (!hit) return;
+  if (!hasBlock(hit.x, hit.y, hit.z)) return;
+
+  const tex = blockType[hit.z][hit.x][hit.y] | 0; // 0..3
+  setSelectedBlockByTex(tex);
+}
+
 
 
 
 
 // =================== Texture Loading ===================
+function isPowerOf2(v) { return (v & (v - 1)) === 0; }
+
 function initTexture(texUnit, samplerUniform, url, onReadyFlagName) {
   const texture = gl.createTexture();
   const image = new Image();
+
   image.onload = () => {
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1);
 
     gl.activeTexture(texUnit);
     gl.bindTexture(gl.TEXTURE_2D, texture);
 
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
-
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
-    gl.generateMipmap(gl.TEXTURE_2D);
 
-    // connect sampler to unit index
-    const unitIndex = (texUnit === gl.TEXTURE0) ? 0 : 1;
+    const pot = isPowerOf2(image.width) && isPowerOf2(image.height);
+
+    if (pot) {
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+      gl.generateMipmap(gl.TEXTURE_2D);
+    } else {
+      // WebGL1 rule for NPOT: no mipmaps, wrap must be CLAMP_TO_EDGE
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    }
+
+    const unitIndex = texUnit - gl.TEXTURE0; // 0..3
+    gl.useProgram(gl.program);               // ensure program is active
     gl.uniform1i(samplerUniform, unitIndex);
 
     textures[onReadyFlagName] = true;
+
+    console.log(`Loaded ${url} (${image.width}x${image.height}) -> unit ${unitIndex}, POT=${pot}`);
   };
-  image.crossOrigin = "anonymous";
+
+  image.onerror = () => {
+    console.error("FAILED to load texture:", url);
+  };
+
   image.src = url;
 }
 
 // =================== Input ===================
+function setSelectedBlock(idx) {
+  const n = BLOCKS.length;
+  gSelectedBlock = ((idx % n) + n) % n;
+  updateHotbarUI();
+}
+
+function cycleSelectedBlock(delta) {
+  setSelectedBlock(gSelectedBlock + delta);
+}
+
+function createHotbarUI() {
+  hotbarEl = document.getElementById("hotbar");
+  if (!hotbarEl) return;
+
+  const ICONS = ["./wall.png", "./grass.jpg", "./stone.png", "./dirt.png"];
+
+  hotbarEl.innerHTML = "";
+
+  for (let i = 0; i < BLOCKS.length; i++) {
+    const slot = document.createElement("div");
+    slot.className = "hotbar-slot";
+    slot.dataset.idx = String(i);
+
+    // icon background
+    const icon = document.createElement("div");
+    icon.className = "hotbar-icon";
+    icon.style.backgroundImage = `url("${ICONS[i]}")`;
+
+    // label + key on top
+    const label = document.createElement("div");
+    label.className = "hotbar-label";
+    label.textContent = BLOCKS[i].name;
+
+    const key = document.createElement("div");
+    key.className = "hotbar-key";
+    key.textContent = String(i + 1);
+
+    slot.appendChild(icon);
+    slot.appendChild(label);
+    slot.appendChild(key);
+
+    hotbarEl.appendChild(slot);
+  }
+
+  updateHotbarUI();
+}
+
+
+function updateHotbarUI() {
+  if (!hotbarEl) return;
+  const slots = hotbarEl.querySelectorAll(".hotbar-slot");
+  slots.forEach((s) => s.classList.remove("selected"));
+  const sel = hotbarEl.querySelector(`.hotbar-slot[data-idx="${gSelectedBlock}"]`);
+  if (sel) sel.classList.add("selected");
+}
+
+
 function setupInput() {
-  window.addEventListener("keydown", (e) => { keys[e.key.toLowerCase()] = true; });
+  window.addEventListener("keydown", (e) => {
+    const k = e.key.toLowerCase();
+    keys[k] = true;
+
+    if (k === "f") triggerPoke();
+
+    // hotbar keys 1..3
+    if (k === "1") setSelectedBlock(0);
+    if (k === "2") setSelectedBlock(1);
+    if (k === "3") setSelectedBlock(2);
+    if (k === "4") setSelectedBlock(3);
+  });
+
   window.addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
+
+  
+  canvas.addEventListener("wheel", (e) => {
+    if (!pointerLocked) return;
+
+    e.preventDefault(); // stop page scroll
+    const dir = (e.deltaY > 0) ? 1 : -1; // down = next, up = prev
+    cycleSelectedBlock(dir);
+  }, { passive: false });
+
 
   // Pointer lock for mouse look
   canvas.addEventListener("click", () => {
-    canvas.requestPointerLock?.();
+    if (!pointerLocked) {
+      canvas.requestPointerLock?.();
+    }
   });
+
 
   let ignoreMouseUntil = 0;
 
@@ -813,12 +1097,29 @@ function setupInput() {
   canvas.addEventListener("mousedown", (e) => {
     if (!pointerLocked) return;
 
-    if (e.button === 0) {        // left
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Left = remove
+    if (e.button === 0) {
       removeBlockOnFace();
-    } else if (e.button === 2) { // right
+    }
+    // Right = add
+    else if (e.button === 2) {
       addBlockOnFace();
     }
+    // Middle = pick block
+    else if (e.button === 1) {
+      pickBlockFromLook();
+    }
   });
+  canvas.addEventListener("mouseup", (e) => {
+    if (!pointerLocked) return;
+    e.preventDefault();
+    e.stopPropagation();
+  });
+
+
 
 }
 
@@ -839,14 +1140,23 @@ function handleKeys(dtScale) {
 
   // turn keys should also scale
   const turnSpeed = 3.0 * dtScale;
-  if (keys["q"]) camera.addLookDelta(-turnSpeed, 0.0);
-  if (keys["e"]) camera.addLookDelta( turnSpeed, 0.0);
-}
+  if (keys["q"]) camera.addLookDeltaInstant(-turnSpeed, 0.0);
+  if (keys["e"]) camera.addLookDeltaInstant( turnSpeed, 0.0);
 
+}
 
 
 // =================== Rendering ===================
 function drawScene() {
+  gl.bindBuffer(gl.ARRAY_BUFFER, cubeMesh.vbo);
+  const FSIZE = Float32Array.BYTES_PER_ELEMENT;
+
+  gl.vertexAttribPointer(a_Position, 3, gl.FLOAT, false, 5 * FSIZE, 0);
+  gl.enableVertexAttribArray(a_Position);
+
+  gl.vertexAttribPointer(a_UV, 2, gl.FLOAT, false, 5 * FSIZE, 3 * FSIZE);
+  gl.enableVertexAttribArray(a_UV);
+
   // update view/proj uniforms
   gl.uniformMatrix4fv(u_ViewMatrix, false, camera.viewMatrix.elements);
   gl.uniformMatrix4fv(u_ProjectionMatrix, false, camera.projectionMatrix.elements);
@@ -855,30 +1165,25 @@ function drawScene() {
 
   // --- SKYBOX ---
   {
-    // Disable depth writes so sky never "cuts out" other geometry
     gl.depthMask(false);
+    gl.disable(gl.CULL_FACE);
 
     const m = new Matrix4();
+    const S = Math.max(WORLD_W, WORLD_D) * 40;
 
-    // Center on the middle of the world footprint, and center vertically around player height
+    // world center
     const cx = WORLD_W * 0.5;
     const cz = WORLD_D * 0.5;
-    const cy = 2.0;
+    const cy = 2.0; // middle-ish of your 0..4 height range
 
-    // Size: big enough to cover the whole world + far plane comfort
-    const S = Math.max(WORLD_W, WORLD_D) * 40; // e.g., 32*40 = 1280
-
-    m.translate(cx, cy, cz);
+    m.translate(cx - S/2, cy - S/2, cz - S/2);
     m.scale(S, S, S);
 
-    cubeMesh.draw(m, {
-      baseColor: [0.25, 0.55, 0.95, 1.0],
-      texWeight: 0.0,
-      whichTex: 0
-    });
+    cubeMesh.draw(m, { baseColor:[0.25,0.55,0.95,1], texWeight:0.0, whichTex:0 });
 
     gl.depthMask(true);
   }
+
 
 
   // --- GROUND ---
@@ -888,17 +1193,16 @@ function drawScene() {
     m.translate(0, -1.0, 0);
     m.scale(WORLD_W, 1, WORLD_D);
 
-    // Use texture 1 if loaded, else base color
-    const useTex = textures.ready1 ? 1.0 : 0.0;
     cubeMesh.draw(m, {
       baseColor: [0.25, 0.8, 0.25, 1.0],
-      texWeight: useTex,
+      texWeight: textures.ready1 ? 1.0 : 0.0, 
       whichTex: 1
     });
   }
 
+
   // --- WALLS from voxel masks ---
-  const wallTexReady = textures.ready0;
+  const wallTexReady = textures.ready0 || textures.ready1 || textures.ready2 || textures.ready3;
 
   for (let z = 0; z < WORLD_D; z++) {
     for (let x = 0; x < WORLD_W; x++) {
@@ -911,14 +1215,46 @@ function drawScene() {
         const m = new Matrix4();
         m.translate(x, y, z);
 
+        const t = blockType[z][x][y]; // 0..2
+
+        // only use texture if that sampler is ready
+        const texReady =
+          (t === 0 && textures.ready0) ||
+          (t === 1 && textures.ready1) ||
+          (t === 2 && textures.ready2) ||
+          (t === 3 && textures.ready3);
+
         cubeMesh.draw(m, {
           baseColor: [0.75, 0.75, 0.75, 1.0],
-          texWeight: wallTexReady ? 1.0 : 0.0,
-          whichTex: 0
+          texWeight: texReady ? 1.0 : 0.0,
+          whichTex: t
         });
       }
     }
   }
+
+
+
+  // --- ANIMAL in the world ---
+  {
+    // choose a spot
+    const ax = 16;
+    const az = 16;
+    const ay = groundLevelAt(ax, az)+1; // stand on terrain height
+
+    const M = new Matrix4();
+    M.translate(ax + 0.5, ay, az + 0.5);
+
+    // scale from “animal space” to world block space
+    // tweak this value until it looks right
+    M.scale(1.2, 1.2, 1.2);
+
+    // face some direction (optional)
+    M.rotate(180, 0, 1, 0);
+
+    drawAnimalInWorld(M);
+  }
+
 
 }
 
@@ -934,16 +1270,266 @@ function tick(now = performance.now()) {
 
   handleKeys(dtScale);
   updateVerticalPhysics(dtScale);
-  camera.updateLook(dtScale);
+
+  g_seconds = (now - g_startTime) / 1000.0;
+  if (gAnimateAnimal || g_seconds < gPokeUntil) {
+    updateAnimalAngles();
+  }
 
   drawScene();
   requestAnimationFrame(tick);
 }
 
+function updateAnimalAngles() {
+  const w = 2 * Math.PI * 1.2;
+  const inPoke = (g_seconds < gPokeUntil);
+
+  if (!inPoke) {
+    gBodyPitch = 0;
+    gBodyDrop  = 0;
+    gWinkL = 0;
+    gWinkR = 0;
+
+    gThighAngle = 25 * Math.sin(w * g_seconds);
+    gCalfAngle  = 20 * Math.sin(w * g_seconds + 1.1);
+    gFootAngle  = 12 * Math.sin(w * g_seconds + 2.0);
+
+    gNeckAngle  = 10 + 8 * Math.sin(w * g_seconds + 0.6);
+    gWingAngle  = 8 * Math.sin(w * g_seconds + 0.2);
+
+    const s = 0.5 + 0.5 * Math.sin(0.7 * w * g_seconds);
+    gTailSpread = 90 + 60 * s;
+  } else {
+    const dur = gPokeDuration;
+    const u = Math.min(1, Math.max(0, (g_seconds - gPokeStart) / dur));
+
+    const clamp01 = (x) => Math.max(0, Math.min(1, x));
+    const smooth = (x) => x * x * (3 - 2 * x);
+
+    const p0 = smooth(clamp01(u / 0.18));
+    const p1 = smooth(clamp01((u - 0.18) / 0.42));
+    const p2 = smooth(clamp01((u - 0.60) / 0.40));
+
+    const jitter = Math.sin(2 * Math.PI * 18 * g_seconds);
+
+    gWingAngle = 65 * p0 + 12 * jitter * p0 * (1 - p1);
+    gFeatherCount = 18 + 12 * Math.sin(Math.PI * p2);
+
+    gTailSpread = 30 + 15 * (1 - p0);
+    gNeckAngle = 25 * p0 - 10 * p1;
+
+    gBodyPitch = 55 * p1 * (1 - p2);
+    gBodyDrop  = 0.18 * p1 * (1 - p2);
+
+    gThighAngle = -35 * p1;
+    gCalfAngle  =  25 * p1;
+    gFootAngle  =  15 * p1;
+
+    const winkMid =
+      smooth(clamp01((u - 0.28) / 0.18)) *
+      (1 - smooth(clamp01((u - 0.62) / 0.18)));
+    gWinkL = 0.0;
+    gWinkR = winkMid;
+
+    gTailSpread = (1 - p2) * gTailSpread + p2 * (160 - 20 * Math.sin(2 * Math.PI * 3 * (u - 0.60)));
+    gWingAngle  = (1 - p2) * gWingAngle  + p2 * (10 * Math.sin(2 * Math.PI * 2.5 * (u - 0.60)));
+
+    gBodyPitch *= (1 - p2);
+    gBodyDrop  *= (1 - p2);
+  }
+}
+
+function drawAnimalInWorld(worldM) {
+  // Colors
+  const bodyColor  = [0.10, 0.35, 0.55, 1.0];
+  const neckColor  = [0.08, 0.30, 0.50, 1.0];
+  const headColor  = [0.12, 0.40, 0.65, 1.0];
+  const beakColor  = [0.90, 0.70, 0.15, 1.0];
+  const legColor   = [0.65, 0.55, 0.30, 1.0];
+  const wingColor  = [0.08, 0.30, 0.45, 1.0];
+  const tailColorA = [0.05, 0.45, 0.35, 1.0];
+  const tailColorB = [0.10, 0.55, 0.20, 1.0];
+  const crestColor = [0.20, 0.70, 0.95, 1.0];
+
+  const EPS = 0.002;
+
+  // Root/base
+  const root = new Matrix4(worldM);
+  root.translate(0, -gBodyDrop, 0);
+  root.rotate(gBodyPitch, 1, 0, 0);
+
+  // BODY
+  const bodyBase = new Matrix4(root);
+  const body = new Matrix4(bodyBase);
+  body.scale(0.85, 0.40, 0.55);
+  drawColoredCubeCentered(body, bodyColor);
+
+  // NECK
+  const neckBase = new Matrix4(bodyBase);
+  neckBase.translate(0.0, 0.18, 0.20);
+  neckBase.rotate(gNeckAngle, 1, 0, 0);
+
+  const NECK_LEN = 0.48;
+  const NECK_CENTER_Y = 0.24;
+
+  const neck = new Matrix4(neckBase);
+  neck.translate(0.0, NECK_CENTER_Y, 0.0);
+  neck.scale(0.14, NECK_LEN, 0.14);
+  drawColoredCubeCentered(neck, neckColor);
+
+  // HEAD
+  const headBase = new Matrix4(neckBase);
+  headBase.translate(0.0, NECK_LEN + 0.02, 0.00);
+
+  const head = new Matrix4(headBase);
+  head.scale(0.26, 0.20, 0.22);
+  drawColoredCubeCentered(head, headColor);
+
+  // EYES
+  function drawEye(x, winkAmount) {
+    const eye = new Matrix4(headBase);
+    eye.translate(x, 0.03, 0.115);
+    const openY = 0.045;
+    const y = openY * (1.0 - 0.92 * winkAmount);
+    eye.scale(0.04, y, 0.04);
+    drawColoredCubeCentered(eye, [0.05, 0.05, 0.05, 1.0]);
+  }
+  drawEye( 0.075, gWinkL);
+  drawEye(-0.075, gWinkR);
+
+  // BEAK
+  const beak = new Matrix4(headBase);
+  beak.translate(0.0, 0.00, 0.20);
+  beak.scale(0.10, 0.06, 0.22);
+  drawColoredCubeCentered(beak, beakColor);
+
+  // CREST
+  for (let i = -1; i <= 1; i++) {
+    const crest = new Matrix4(headBase);
+    crest.translate(0.05 * i, 0.18, 0.02);
+    crest.rotate(-25 + 10 * i, 0, 0, 1);
+    crest.scale(0.04, 0.18, 0.04);
+    drawColoredCubeCentered(crest, crestColor);
+  }
+
+  // WINGS
+  const leftWingBase = new Matrix4(bodyBase);
+  leftWingBase.translate(0.42, 0.05, 0.05);
+  leftWingBase.rotate(-gWingAngle, 0, 0, 1);
+
+  const leftWing = new Matrix4(leftWingBase);
+  leftWing.translate(0.22, 0.0, 0.0);
+  leftWing.scale(0.55, 0.10, 0.35);
+  drawColoredCubeCentered(leftWing, wingColor);
+
+  const rightWingBase = new Matrix4(bodyBase);
+  rightWingBase.translate(-0.42, 0.05, 0.05);
+  rightWingBase.rotate(gWingAngle, 0, 0, 1);
+
+  const rightWing = new Matrix4(rightWingBase);
+  rightWing.translate(-0.22, 0.0, 0.0);
+  rightWing.scale(0.55, 0.10, 0.35);
+  drawColoredCubeCentered(rightWing, wingColor);
+
+  // LEGS
+  function drawLeg(anchorX, anchorZ, thighAng, calfAng, footAng) {
+    let L = new Matrix4(bodyBase);
+    L.translate(anchorX, -0.05, anchorZ);
+
+    L.rotate(thighAng, 1, 0, 0);
+    {
+      const thigh = new Matrix4(L);
+      thigh.translate(0, -0.18, 0);
+      thigh.scale(0.10, 0.35, 0.10);
+      drawColoredCubeCentered(thigh, legColor);
+    }
+
+    L.translate(0, -0.35 - EPS, 0);
+
+    L.rotate(calfAng, 1, 0, 0);
+    {
+      const calf = new Matrix4(L);
+      calf.translate(0, -0.16, 0);
+      calf.scale(0.09, 0.32, 0.09);
+      drawColoredCubeCentered(calf, legColor);
+    }
+
+    L.translate(0, -0.32 - EPS, 0);
+
+    L.rotate(footAng, 1, 0, 0);
+    {
+      const foot = new Matrix4(L);
+      foot.translate(0, -0.05, 0.06);
+      foot.scale(0.14, 0.08, 0.24);
+      drawColoredCubeCentered(foot, legColor);
+    }
+  }
+
+  drawLeg(0.18, 0.10, gThighAngle, gCalfAngle, gFootAngle);
+
+  const thighR = gAnimateAnimal ? -gThighAngle : gThighAngle;
+  const calfR  = gAnimateAnimal ? -gCalfAngle  : gCalfAngle;
+  const footR  = gAnimateAnimal ? -gFootAngle  : gFootAngle;
+  drawLeg(-0.18, 0.10, thighR, calfR, footR);
+
+  // TAIL
+  const tailBase = new Matrix4(bodyBase);
+  tailBase.translate(0.0, 0.0, -0.30);
+  tailBase.rotate(-10, 1, 0, 0);
+
+  const tailChunk = new Matrix4(tailBase);
+  tailChunk.translate(0.0, 0.05, -0.06);
+  tailChunk.scale(0.20, 0.18, 0.18);
+  drawColoredCubeCentered(tailChunk, tailColorA);
+
+  const N = Math.max(3, Math.floor(gFeatherCount));
+  const spread = gTailSpread;
+
+  const featherLen = 0.95;
+  const featherThkX = 0.06;
+  const featherThkZ = 0.03;
+
+  const attachY = 0.10;
+  const attachZ = -0.02;
+
+  for (let i = 0; i < N; i++) {
+    const a = -spread * 0.5 + (spread * i) / (N - 1);
+
+    const featherPivot = new Matrix4(tailBase);
+    featherPivot.translate(0.0, attachY, attachZ);
+    featherPivot.rotate(a, 0, 0, 1);
+    featherPivot.rotate(-35, 1, 0, 0);
+
+    const feather = new Matrix4(featherPivot);
+    feather.translate(0.0, featherLen * 0.5, 0.0);
+    feather.scale(featherThkX, featherLen, featherThkZ);
+
+    const c = (i % 2 === 0) ? tailColorA : tailColorB;
+    drawColoredCubeCentered(feather, c);
+
+    const tip = new Matrix4(featherPivot);
+    tip.translate(0.0, featherLen, 0.0);
+
+    const eyeOuter = new Matrix4(tip);
+    eyeOuter.translate(0.0, 0.04, 0.0);
+    eyeOuter.scale(0.18, 0.12, 0.06);
+    drawColoredCubeCentered(eyeOuter, [0.90, 0.85, 0.15, 1.0]);
+
+    const eyeMid = new Matrix4(tip);
+    eyeMid.translate(0.0, 0.04, 0.006);
+    eyeMid.scale(0.13, 0.09, 0.05);
+    drawColoredCubeCentered(eyeMid, [0.05, 0.60, 0.55, 1.0]);
+
+    const eyeCore = new Matrix4(tip);
+    eyeCore.translate(0.0, 0.04, 0.012);
+    eyeCore.scale(0.07, 0.05, 0.04);
+    drawColoredCube(eyeCore, [0.05, 0.10, 0.12, 1.0]);
+  }
+}
+
 
 // =================== Resize ===================
 function resizeCanvasToDisplaySize() {
-  if (pointerLocked) return; // don't resize mid-lock
   const dpr = window.devicePixelRatio || 1;
   const w = Math.floor(canvas.clientWidth * dpr);
   const h = Math.floor(canvas.clientHeight * dpr);
@@ -992,22 +1578,36 @@ function main() {
 
   u_Sampler0 = gl.getUniformLocation(gl.program, "u_Sampler0");
   u_Sampler1 = gl.getUniformLocation(gl.program, "u_Sampler1");
+  u_Sampler2 = gl.getUniformLocation(gl.program, "u_Sampler2");
+  u_Sampler3 = gl.getUniformLocation(gl.program, "u_Sampler3");
 
   // camera + geometry
   camera = new Camera();
   cubeMesh = new CubeMesh();
 
+  createHotbarUI();
+  setSelectedBlock(0); // default
+
   setupInput();
 
   // textures (put images in asgn3/src/ or asgn3/ and update paths)
   // NOTE: Must be power-of-2 square images (e.g. 256x256).
-  initTexture(gl.TEXTURE0, u_Sampler0, "./wall.png", "ready0");
-  initTexture(gl.TEXTURE1, u_Sampler1, "./grass.png", "ready1");
-  // initTexture(gl.TEXTURE1, u_Sampler1, "./grass.jpg", "ready1");
+  initTexture(gl.TEXTURE0, u_Sampler0, "./wall.png",  "ready0");
+  initTexture(gl.TEXTURE1, u_Sampler1, "./grass.jpg", "ready1");
+  initTexture(gl.TEXTURE2, u_Sampler2, "./stone.png", "ready2");
+  initTexture(gl.TEXTURE3, u_Sampler3, "./dirt.png",  "ready3");
 
   initVoxelsFromHeights();
 
+  // Spawn on top of whatever column we start in
+  const sx = 16;
+  const sz = 28;
+  camera.eye = new Vector3([sx, groundLevelAt(sx, sz) + EYE_HEIGHT, sz]);
+  camera.recomputeAt();
+  camera.updateView();
+
   tick();
+
 }
 
 main();
