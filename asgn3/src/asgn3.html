@@ -11,13 +11,45 @@
         color: white; font-family: monospace; font-size: 13px;
         background: rgba(0,0,0,0.35); padding: 8px 10px; border-radius: 8px;
       }
+      #crosshair {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        width: 12px;
+        height: 12px;
+        transform: translate(-50%, -50%);
+        pointer-events: none;
+        z-index: 9999;
+      }
+
+      #crosshair::before,
+      #crosshair::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        background: rgba(255,255,255,0.85);
+        transform: translate(-50%, -50%);
+        border-radius: 1px;
+      }
+
+      #crosshair::before { /* horizontal */
+        width: 12px;
+        height: 2px;
+      }
+
+      #crosshair::after {  /* vertical */
+        width: 2px;
+        height: 12px;
+      }
+
     </style>
     <link rel="icon" href="data:,">
   </head>
 
   <body>
     <div id="hud">
-      WASD move • Q/E turn • Mouse look (click canvas) <br/>
+      WASD move • Q/E turn • Mouse look (click canvas) • Space jump<br/>
       (Hook later) Left click: remove • Right click: add
     </div>
 
@@ -31,5 +63,6 @@
 
     <!-- main -->
     <script src="asgn3.js"></script>
+    <div id="crosshair"></div>
   </body>
 </html>

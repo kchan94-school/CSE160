@@ -59,7 +59,7 @@ let lastMouseT = 0;
 // world constants
 const WORLD_W = 32;
 const WORLD_D = 32;
-const MAX_H = 4;
+const MAX_H = 12;
 
 // textures
 const textures = {
@@ -71,11 +71,61 @@ const textures = {
 const keys = Object.create(null);
 let pointerLocked = false;
 
+// =================== Player physics ===================
+let lastFrameT = performance.now();
+const REF_DT = 16.67; // ms (60 FPS baseline)
+
+const EYE_HEIGHT = 1.7;       // camera height above ground
+const GRAVITY = -0.01;       // per frame (tune)
+const JUMP_V = 0.26;          // initial jump velocity (tune)
+const MAX_FALL = -0.6;
+const PLAYER_HEIGHT = 1.8;  // total height of player (meters-ish)
+const STEP_HEIGHT = 1.0;    // can step up 1 block
+const EPS = 1e-4;
+
+
+let velY = 0.0;
+let onGround = false;
+
+function updateVerticalPhysics(dtScale) {
+  const ex = camera.eye.elements[0];
+  const ez = camera.eye.elements[2];
+
+  const cx = Math.floor(ex);
+  const cz = Math.floor(ez);
+
+  const groundY = groundLevelAt(cx, cz) + EYE_HEIGHT;
+
+  // gravity (scaled)
+  velY += GRAVITY * dtScale;
+  if (velY < MAX_FALL) velY = MAX_FALL;
+
+  // integrate (scaled)
+  camera.eye.elements[1] += velY * dtScale;
+
+  // (If you added ceiling collision earlier, call it here too)
+
+  // ground collision
+  if (camera.eye.elements[1] <= groundY) {
+    camera.eye.elements[1] = groundY;
+    velY = 0.0;
+    onGround = true;
+  } else {
+    onGround = false;
+  }
+
+  camera.recomputeAt();
+  camera.updateView();
+}
+
+
+
 // =================== Camera ===================
 class Camera {
   constructor() {
     this.fov = 60;
 
+    // this.eye = new Vector3([16, groundLevelAt(16, 28) + EYE_HEIGHT, 28]);
     this.eye = new Vector3([16, 2, 28]);
     this.up  = new Vector3([0, 1, 0]);
 
@@ -148,18 +198,33 @@ class Camera {
   }
 
   // Call once per frame for smoothing
-  updateLook() {
-    const a = this.lookSmoothing;
+  updateLook(dtScale) {
+    // Convert “per-frame smoothing” to dt-based:
+    // if lookSmoothing = 0.22 at 60fps, then per-dt alpha is:
+    const a = 1 - Math.pow(1 - this.lookSmoothing, dtScale);
 
-    // Move yaw by the shortest delta (prevents seam snaps)
     const dyaw = Camera.shortestAngleDelta(this.yawTarget, this.yawDeg);
     this.yawDeg += dyaw * a;
 
-    // Pitch is fine to lerp directly (it's clamped, no wrap)
     this.pitchDeg = this.pitchDeg + (this.pitchTarget - this.pitchDeg) * a;
 
     this.recomputeAt();
     this.updateView();
+  }
+
+
+  forwardDir() {
+    // full forward from yaw/pitch (same math as recomputeAt)
+    const yaw = (this.yawDeg * Math.PI) / 180;
+    const pitch = (this.pitchDeg * Math.PI) / 180;
+
+    const fx = Math.cos(pitch) * Math.cos(yaw);
+    const fy = Math.sin(pitch);
+    const fz = Math.cos(pitch) * Math.sin(yaw);
+
+    const f = new Vector3([fx, fy, fz]);
+    f.normalize();
+    return f;
   }
 
 
@@ -173,41 +238,96 @@ class Camera {
     return f;
   }
 
+  tryMove(deltaVec) {
+    const ex = this.eye.elements[0];
+    const ey = this.eye.elements[1];
+    const ez = this.eye.elements[2];
+
+    const dx = deltaVec.elements[0];
+    const dz = deltaVec.elements[2];
+
+    const attemptMoveTo = (tx, tz) => {
+      const curCX = Math.floor(this.eye.elements[0]);
+      const curCZ = Math.floor(this.eye.elements[2]);
+
+      const tgtCX = Math.floor(tx);
+      const tgtCZ = Math.floor(tz);
+
+      if (tgtCX < 0 || tgtCX >= WORLD_W || tgtCZ < 0 || tgtCZ >= WORLD_D) return false;
+
+      const curGround = groundLevelAt(curCX, curCZ);
+      const tgtGround = groundLevelAt(tgtCX, tgtCZ);
+
+      // too tall to step up
+      if (onGround && (tgtGround - curGround > STEP_HEIGHT)) return false;
+
+      // choose eyeY
+      let newEyeY = this.eye.elements[1];
+      if (onGround) newEyeY = tgtGround + EYE_HEIGHT;
+
+      // height-aware occupancy test (your canOccupyAt)
+      if (!canOccupyAt(tgtCX, tgtCZ, newEyeY)) return false;
+
+      // commit
+      this.eye = new Vector3([tx, newEyeY, tz]);
+      this.recomputeAt();
+      this.updateView();
+      return true;
+    };
+
+    // Try move along X first (keeping Z)
+    attemptMoveTo(ex + dx, ez);
+
+    // Then along Z (using possibly updated X)
+    attemptMoveTo(this.eye.elements[0], ez + dz);
+  }
+
+
+
   moveForward(speed = 0.15) {
     const f = this.forwardDirXZ();
     f.mul(speed);
-    this.eye.add(f);
-    this.recomputeAt();
-    this.updateView();
+    this.tryMove(f);
   }
 
   moveBackward(speed = 0.15) {
     const f = this.forwardDirXZ();
     f.mul(-speed);
-    this.eye.add(f);
-    this.recomputeAt();
-    this.updateView();
+    this.tryMove(f);
   }
 
   moveRight(speed = 0.15) {
     const f = this.forwardDirXZ();
-    const s = Vector3.cross(f, this.up); // right
+    const s = Vector3.cross(f, this.up);
     s.normalize();
     s.mul(speed);
-    this.eye.add(s);
-    this.recomputeAt();
-    this.updateView();
+    this.tryMove(s);
   }
 
   moveLeft(speed = 0.15) {
     const f = this.forwardDirXZ();
-    const s = Vector3.cross(this.up, f); // left
+    const s = Vector3.cross(this.up, f);
     s.normalize();
     s.mul(speed);
-    this.eye.add(s);
+    this.tryMove(s);
+  }
+
+  addLookDeltaInstant(deltaYawDeg, deltaPitchDeg) {
+    this.yawDeg += deltaYawDeg;
+    this.pitchDeg += deltaPitchDeg;
+
+    const limit = 89.0;
+    if (this.pitchDeg > limit) this.pitchDeg = limit;
+    if (this.pitchDeg < -limit) this.pitchDeg = -limit;
+
+    // keep targets in sync so smoothing doesn't "pull" you back
+    this.yawTarget = this.yawDeg;
+    this.pitchTarget = this.pitchDeg;
+
     this.recomputeAt();
     this.updateView();
   }
+
 }
 
 
@@ -275,35 +395,337 @@ class CubeMesh {
 
 let cubeMesh;
 
-// =================== World Map ===================
-// Each cell is height 0..4 (walls). Ground + sky are separate.
-const worldMap = buildMap32();
+// =================== World Map (HARD-CODED) ===================
+// 32 lines, each 32 chars, using 0..4 for heights.
+const WORLD_LAYOUT = `
+33333333333333333333333333333333
+30000000000000000000000000000003
+30000000000000000000000000000003
+30000000000000000000000000000003
+30000000000000000000000000000003
+30000000000000000000000000000003
+30000040000000000000000000000003
+30000000000000000000000000000003
+30000000002000000000000000000003
+30000000002000000000000000000003
+30000000002000000000000000000003
+30000000002000000000000000000003
+30000000002000000000000000000003
+30000000002000000000000000000003
+30000000002000001111111111100003
+30000000002000000000000000000003
+30000000002000000000000000000003
+30000000002000000000000000000003
+30000000002000000000000000000003
+30000000002000000000000000000003
+30000000002000000000000000000003
+30000000000000000000000000000003
+30000000000000000000000000000003
+30000000000000000000000000000003
+30000000000000000000000000000003
+30000000000000000000000000000003
+30000000000000000000000000000003
+30000000000000000000000000000003
+30000000000000000000000000000003
+30000000000000000000000000000003
+30000000000000000000000000000003
+33333333333333333333333333333333
+`.trim();
 
-// Example generator: border walls + a few structures.
-// You can replace this with a literal 32x32 hardcoded array later if you want.
-function buildMap32() {
+function parseWorld32(layoutStr) {
+  const lines = layoutStr.split("\n");
+  if (lines.length !== WORLD_D) throw new Error("WORLD_LAYOUT must have 32 lines");
   const map = [];
   for (let z = 0; z < WORLD_D; z++) {
+    const line = lines[z].trim();
+    if (line.length !== WORLD_W) throw new Error(`Line ${z} must have 32 chars`);
     const row = [];
     for (let x = 0; x < WORLD_W; x++) {
-      let h = 0;
-
-      // border
-      if (x === 0 || z === 0 || x === WORLD_W - 1 || z === WORLD_D - 1) h = 3;
-
-      // a couple obstacles
-      if (x === 10 && z >= 8 && z <= 20) h = 2;
-      if (z === 14 && x >= 14 && x <= 26) h = 1;
-
-      // a "tower"
-      if (x === 6 && z === 6) h = 4;
-
-      row.push(h);
+      const c = line[x];
+      const h = (c.charCodeAt(0) - 48); // '0'..'4'
+      row.push(Math.max(0, Math.min(MAX_H, h | 0)));
     }
     map.push(row);
   }
   return map;
 }
+
+const worldMap = parseWorld32(WORLD_LAYOUT);
+
+// =================== Voxels: 32x32x4 (bitmask per column) ===================
+// columnMask[z][x] is a 4-bit mask. bit y=1 means block exists at that (x,y,z).
+let columnMask = null;
+
+function initVoxelsFromHeights() {
+  columnMask = Array.from({ length: WORLD_D }, () => new Uint8Array(WORLD_W));
+  for (let z = 0; z < WORLD_D; z++) {
+    for (let x = 0; x < WORLD_W; x++) {
+      const h = clamp(worldMap[z][x] | 0, 0, MAX_H);
+      // mask with lowest h bits set: h=0 -> 0, h=4 -> 0b1111
+      columnMask[z][x] = (h === 0) ? 0 : ((1 << h) - 1);
+    }
+  }
+}
+
+function hasBlock(x, y, z) {
+  if (x < 0 || x >= WORLD_W || z < 0 || z >= WORLD_D || y < 0 || y >= MAX_H) return false;
+  return (columnMask[z][x] & (1 << y)) !== 0;
+}
+
+function setBlock(x, y, z, on) {
+  if (x < 0 || x >= WORLD_W || z < 0 || z >= WORLD_D || y < 0 || y >= MAX_H) return false;
+  const bit = (1 << y);
+  const m = columnMask[z][x];
+  columnMask[z][x] = on ? (m | bit) : (m & ~bit);
+  return true;
+}
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+function raycastVoxel(maxDist = 7.0) {
+  const o = camera.eye.elements;
+  const d = camera.forwardDir().elements;
+
+  let ox = o[0], oy = o[1], oz = o[2];
+  let dx = d[0], dy = d[1], dz = d[2];
+
+  // Start cell
+  let x = Math.floor(ox);
+  let y = Math.floor(oy);
+  let z = Math.floor(oz);
+
+  // Direction steps
+  const stepX = dx > 0 ? 1 : (dx < 0 ? -1 : 0);
+  const stepY = dy > 0 ? 1 : (dy < 0 ? -1 : 0);
+  const stepZ = dz > 0 ? 1 : (dz < 0 ? -1 : 0);
+
+  const INF = 1e30;
+
+  const tDeltaX = stepX === 0 ? INF : Math.abs(1 / dx);
+  const tDeltaY = stepY === 0 ? INF : Math.abs(1 / dy);
+  const tDeltaZ = stepZ === 0 ? INF : Math.abs(1 / dz);
+
+  // distance to first boundary
+  const nextBoundaryX = stepX > 0 ? (x + 1) : x;
+  const nextBoundaryY = stepY > 0 ? (y + 1) : y;
+  const nextBoundaryZ = stepZ > 0 ? (z + 1) : z;
+
+  let tMaxX = stepX === 0 ? INF : (nextBoundaryX - ox) / dx;
+  let tMaxY = stepY === 0 ? INF : (nextBoundaryY - oy) / dy;
+  let tMaxZ = stepZ === 0 ? INF : (nextBoundaryZ - oz) / dz;
+
+  // Ensure positive tMax even with negative dirs
+  if (tMaxX < 0) tMaxX = 0;
+  if (tMaxY < 0) tMaxY = 0;
+  if (tMaxZ < 0) tMaxZ = 0;
+
+  let t = 0.0;
+
+  // Face normal of the boundary we crossed to enter the current cell
+  let nx = 0, ny = 0, nz = 0;
+
+  for (let iter = 0; iter < 2048 && t <= maxDist; iter++) {
+    // If inside bounds and occupied, we hit
+    if (x >= 0 && x < WORLD_W && z >= 0 && z < WORLD_D && y >= 0 && y < MAX_H) {
+      if (hasBlock(x, y, z)) {
+        return { x, y, z, nx, ny, nz, t };
+      }
+    }
+
+    // Step to next cell
+    if (tMaxX < tMaxY && tMaxX < tMaxZ) {
+      t = tMaxX;
+      tMaxX += tDeltaX;
+      x += stepX;
+      nx = -stepX; ny = 0; nz = 0; // we crossed an X plane
+    } else if (tMaxY < tMaxZ) {
+      t = tMaxY;
+      tMaxY += tDeltaY;
+      y += stepY;
+      nx = 0; ny = -stepY; nz = 0; // crossed a Y plane
+    } else {
+      t = tMaxZ;
+      tMaxZ += tDeltaZ;
+      z += stepZ;
+      nx = 0; ny = 0; nz = -stepZ; // crossed a Z plane
+    }
+
+    // If we’ve gone too far outside horizontally, still allow returning null
+    if (x < -2 || x > WORLD_W + 2 || z < -2 || z > WORLD_D + 2 || y < -8 || y > MAX_H + 8) {
+      // keep going a little; usually exits quickly anyway
+    }
+  }
+
+  return null;
+}
+
+function isAtLeastOneBlockAwayFromVoxel(x, y, z) {
+  const ex = camera.eye.elements[0];
+  const ey = camera.eye.elements[1];
+  const ez = camera.eye.elements[2];
+
+  // distance from eye to voxel center
+  const cx = x + 0.5;
+  const cy = y + 0.5;
+  const cz = z + 0.5;
+
+  const dx = ex - cx;
+  const dy = ey - cy;
+  const dz = ez - cz;
+
+  return (dx*dx + dy*dy + dz*dz) >= (1.0 * 1.0);
+}
+
+function highestSolidYInColumn(x, z) {
+  if (x < 0 || x >= WORLD_W || z < 0 || z >= WORLD_D) return -1;
+  const mask = columnMask[z][x] | 0;
+  for (let y = MAX_H - 1; y >= 0; y--) {
+    if (mask & (1 << y)) return y;
+  }
+  return -1;
+}
+
+function groundLevelAt(x, z) {
+  // top surface y (where you stand) = highestSolidY + 1, or 0 if empty
+  const top = highestSolidYInColumn(x, z);
+  return (top >= 0) ? (top + 1) : 0;
+}
+
+function columnHasAnyBlockInYRange(x, z, yMin, yMax) {
+  // checks integer voxel y in [yMin, yMax] inclusive
+  if (x < 0 || x >= WORLD_W || z < 0 || z >= WORLD_D) return true;
+
+  const lo = Math.max(0, Math.floor(yMin));
+  const hi = Math.min(MAX_H - 1, Math.floor(yMax));
+
+  for (let y = lo; y <= hi; y++) {
+    if (hasBlock(x, y, z)) return true;
+  }
+  return false;
+}
+
+function canOccupyAt(x, z, eyeY) {
+  // player occupies [feetY, headY)
+  const feetY = eyeY - EYE_HEIGHT;
+  const headY = feetY + PLAYER_HEIGHT;
+
+  // out of bounds blocks movement
+  if (x < 0 || x >= WORLD_W || z < 0 || z >= WORLD_D) return false;
+
+  // if any voxel intersects our body span, we collide
+  return !columnHasAnyBlockInYRange(x, z, feetY + EPS, headY - EPS);
+}
+
+function resolveCeilingCollision() {
+  const ex = camera.eye.elements[0];
+  const ez = camera.eye.elements[2];
+
+  const cx = Math.floor(ex);
+  const cz = Math.floor(ez);
+
+  if (!inBoundsXZ(cx, cz)) return;
+
+  const eyeY = camera.eye.elements[1];
+
+  // Player span
+  const feetY = eyeY - EYE_HEIGHT;
+  const headY = feetY + PLAYER_HEIGHT;
+
+  // If head is inside a solid voxel, push down and kill upward velocity
+  const headVoxelY = Math.floor(headY - 1e-4); // slightly below head plane
+  if (headVoxelY >= 0 && headVoxelY < MAX_H) {
+    if (hasBlock(cx, headVoxelY, cz)) {
+      // ceiling is at (headVoxelY) .. (headVoxelY+1). We want headY <= headVoxelY
+      const newHeadY = headVoxelY; // just below voxel bottom
+      const newEyeY = (newHeadY - PLAYER_HEIGHT) + EYE_HEIGHT;
+
+      camera.eye.elements[1] = newEyeY;
+
+      if (velY > 0) velY = 0; // stop rising
+      onGround = false;
+
+      camera.recomputeAt();
+      camera.updateView();
+    }
+  }
+}
+
+function raycastGroundPlane(yPlane = 0.0, maxDist = 7.0) {
+  const o = camera.eye.elements;
+  const d = camera.forwardDir().elements;
+
+  const oy = o[1], dy = d[1];
+  if (Math.abs(dy) < 1e-6) return null; // parallel
+
+  const t = (yPlane - oy) / dy;
+  if (t < 0 || t > maxDist) return null;
+
+  const px = o[0] + d[0] * t;
+  const pz = o[2] + d[2] * t;
+
+  const x = Math.floor(px);
+  const z = Math.floor(pz);
+
+  if (x < 0 || x >= WORLD_W || z < 0 || z >= WORLD_D) return null;
+
+  return { x, y: yPlane, z, t, px, pz };
+}
+
+
+
+
+// ===== Helpers ====
+
+function inBoundsXZ(x, z) {
+  return x >= 0 && x < WORLD_W && z >= 0 && z < WORLD_D;
+}
+
+
+function removeBlockOnFace() {
+  const hit = raycastVoxel(7.0);
+  if (!hit) return;
+  setBlock(hit.x, hit.y, hit.z, false);
+}
+
+function addBlockOnFace() {
+  const maxDist = 7.0;
+
+  const hitV = raycastVoxel(maxDist);
+  const hitG = raycastGroundPlane(0.0, maxDist);
+
+  // choose closer hit (if both exist)
+  const useGround = hitG && (!hitV || hitG.t < hitV.t);
+
+  if (useGround) {
+    const px = hitG.x;
+    const py = 0;      // place on ground level
+    const pz = hitG.z;
+
+    if (hasBlock(px, py, pz)) return;
+    if (!isAtLeastOneBlockAwayFromVoxel(px, py, pz)) return;
+
+    setBlock(px, py, pz, true);
+    return;
+  }
+
+  // otherwise place adjacent to voxel face (your existing logic)
+  if (!hitV) return;
+
+  const px = hitV.x + hitV.nx;
+  const py = hitV.y + hitV.ny;
+  const pz = hitV.z + hitV.nz;
+
+  if (px < 0 || px >= WORLD_W || pz < 0 || pz >= WORLD_D || py < 0 || py >= MAX_H) return;
+  if (hasBlock(px, py, pz)) return;
+
+  if (!isAtLeastOneBlockAwayFromVoxel(px, py, pz)) return;
+
+  setBlock(px, py, pz, true);
+}
+
+
+
+
 
 // =================== Texture Loading ===================
 function initTexture(texUnit, samplerUniform, url, onReadyFlagName) {
@@ -375,29 +797,52 @@ function setupInput() {
     dx = Math.max(-MAX_DELTA, Math.min(MAX_DELTA, dx));
     dy = Math.max(-MAX_DELTA, Math.min(MAX_DELTA, dy));
 
-    const sensitivity = 0.12;
+    const sensitivity = 0.18;
     const sx = (invertMouseX ? -1 : 1) * sensitivity;
     const sy = (invertMouseY ? -1 : 1) * sensitivity;
 
 
-    const dtScale = Math.max(0.5, Math.min(2.0, dt / 16.67));
-    camera.addLookDelta(dx * sx * dtScale, dy * sy * dtScale);
+    camera.addLookDeltaInstant(dx * sx, dy * sy);
+
   });
 
+  // Prevent right-click menu (so RMB can place blocks)
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
+  // Click to add/remove blocks (only when locked, feels like Minecraft)
+  canvas.addEventListener("mousedown", (e) => {
+    if (!pointerLocked) return;
+
+    if (e.button === 0) {        // left
+      removeBlockOnFace();
+    } else if (e.button === 2) { // right
+      addBlockOnFace();
+    }
+  });
 
 }
 
-function handleKeys() {
-  if (keys["w"]) camera.moveForward();
-  if (keys["s"]) camera.moveBackward();
-  if (keys["a"]) camera.moveLeft();
-  if (keys["d"]) camera.moveRight();
+function handleKeys(dtScale) {
+  const moveSpeed = 0.15 * dtScale;
 
-  // consistent with mouse: adjust yaw target
-  if (keys["q"]) camera.addLookDelta(-2.0, 0.0);
-  if (keys["e"]) camera.addLookDelta(2.0, 0.0);
+  if (keys["w"]) camera.moveForward(moveSpeed);
+  if (keys["s"]) camera.moveBackward(moveSpeed);
+  if (keys["a"]) camera.moveLeft(moveSpeed);
+  if (keys["d"]) camera.moveRight(moveSpeed);
+
+  if (keys[" "]) {
+    if (onGround) {
+      velY = JUMP_V; // impulse is fine as-is (one-time)
+      onGround = false;
+    }
+  }
+
+  // turn keys should also scale
+  const turnSpeed = 3.0 * dtScale;
+  if (keys["q"]) camera.addLookDelta(-turnSpeed, 0.0);
+  if (keys["e"]) camera.addLookDelta( turnSpeed, 0.0);
 }
+
 
 
 // =================== Rendering ===================
@@ -409,26 +854,38 @@ function drawScene() {
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
   // --- SKYBOX ---
-  // Big cube centered around world; use base color only (TexWeight=0)
   {
+    // Disable depth writes so sky never "cuts out" other geometry
+    gl.depthMask(false);
+
     const m = new Matrix4();
-    // put sky roughly centered near map center
-    m.translate(WORLD_W / 2, 10, WORLD_D / 2);
-    m.scale(200, 200, 200);
-    // NOTE: This draws a cube; to be a proper skybox you usually want inside faces.
-    // For class projects, base-color sky cube is usually acceptable.
+
+    // Center on the middle of the world footprint, and center vertically around player height
+    const cx = WORLD_W * 0.5;
+    const cz = WORLD_D * 0.5;
+    const cy = 2.0;
+
+    // Size: big enough to cover the whole world + far plane comfort
+    const S = Math.max(WORLD_W, WORLD_D) * 40; // e.g., 32*40 = 1280
+
+    m.translate(cx, cy, cz);
+    m.scale(S, S, S);
+
     cubeMesh.draw(m, {
       baseColor: [0.25, 0.55, 0.95, 1.0],
       texWeight: 0.0,
       whichTex: 0
     });
+
+    gl.depthMask(true);
   }
+
 
   // --- GROUND ---
   // Flattened cube as a plane; optionally textured
   {
     const m = new Matrix4();
-    m.translate(0, -0.5, 0);
+    m.translate(0, -1.0, 0);
     m.scale(WORLD_W, 1, WORLD_D);
 
     // Use texture 1 if loaded, else base color
@@ -440,15 +897,17 @@ function drawScene() {
     });
   }
 
-  // --- WALLS from map ---
-  // Each cell spawns height cubes at y=0..h-1, translated by (x, y, z)
+  // --- WALLS from voxel masks ---
   const wallTexReady = textures.ready0;
+
   for (let z = 0; z < WORLD_D; z++) {
     for (let x = 0; x < WORLD_W; x++) {
-      const h = worldMap[z][x] | 0;
-      if (h <= 0) continue;
+      const mask = columnMask[z][x];
+      if (!mask) continue;
 
-      for (let y = 0; y < Math.min(h, MAX_H); y++) {
+      for (let y = 0; y < MAX_H; y++) {
+        if ((mask & (1 << y)) === 0) continue;
+
         const m = new Matrix4();
         m.translate(x, y, z);
 
@@ -460,15 +919,27 @@ function drawScene() {
       }
     }
   }
+
 }
 
 // =================== Main Loop ===================
-function tick() {
-  handleKeys();
-  camera.updateLook();
+function tick(now = performance.now()) {
+  let dtMs = now - lastFrameT;
+  lastFrameT = now;
+
+  // clamp dt to avoid giant steps (tab switch, hitch)
+  dtMs = Math.max(1, Math.min(50, dtMs));
+
+  const dtScale = dtMs / REF_DT; // 1.0 at 60fps
+
+  handleKeys(dtScale);
+  updateVerticalPhysics(dtScale);
+  camera.updateLook(dtScale);
+
   drawScene();
   requestAnimationFrame(tick);
 }
+
 
 // =================== Resize ===================
 function resizeCanvasToDisplaySize() {
@@ -532,6 +1003,9 @@ function main() {
   // NOTE: Must be power-of-2 square images (e.g. 256x256).
   initTexture(gl.TEXTURE0, u_Sampler0, "./wall.png", "ready0");
   initTexture(gl.TEXTURE1, u_Sampler1, "./grass.png", "ready1");
+  // initTexture(gl.TEXTURE1, u_Sampler1, "./grass.jpg", "ready1");
+
+  initVoxelsFromHeights();
 
   tick();
 }
