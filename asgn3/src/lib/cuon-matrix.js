@@ -727,6 +727,45 @@ Vector3.prototype.normalize = function() {
    return this;
 };
 
+// ======= Add-on helpers for Vector3 (needed for ASG3 camera) =======
+
+Vector3.prototype.set = function(v) {
+  const e = this.elements;
+  const a = v.elements || v; // allow Vector3 or raw array
+  e[0] = a[0]; e[1] = a[1]; e[2] = a[2];
+  return this;
+};
+
+Vector3.prototype.add = function(v) {
+  const e = this.elements;
+  const a = v.elements || v;
+  e[0] += a[0]; e[1] += a[1]; e[2] += a[2];
+  return this;
+};
+
+Vector3.prototype.sub = function(v) {
+  const e = this.elements;
+  const a = v.elements || v;
+  e[0] -= a[0]; e[1] -= a[1]; e[2] -= a[2];
+  return this;
+};
+
+Vector3.prototype.mul = function(s) {
+  const e = this.elements;
+  e[0] *= s; e[1] *= s; e[2] *= s;
+  return this;
+};
+
+Vector3.cross = function(a, b) {
+  const ae = a.elements, be = b.elements;
+  return new Vector3([
+    ae[1] * be[2] - ae[2] * be[1],
+    ae[2] * be[0] - ae[0] * be[2],
+    ae[0] * be[1] - ae[1] * be[0],
+  ]);
+};
+
+
 /**
  * Constructor of Vector4
  * If opt_src is specified, new vector is initialized by opt_src.

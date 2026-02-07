@@ -50,6 +50,12 @@ let u_Sampler0, u_Sampler1;
 
 let camera;
 
+let invertMouseX = false;
+let invertMouseY = true; // typical FPS: mouse up looks up
+
+let lastMouseT = 0;
+
+
 // world constants
 const WORLD_W = 32;
 const WORLD_D = 32;
@@ -70,15 +76,46 @@ class Camera {
   constructor() {
     this.fov = 60;
 
-    this.eye = new Vector3([16, 2, 28]);   // start position
-    this.at  = new Vector3([16, 2, 27]);   // looking slightly forward (-z)
+    this.eye = new Vector3([16, 2, 28]);
     this.up  = new Vector3([0, 1, 0]);
+
+    // --- Look angles (source of truth) ---
+    this.yawDeg = -90;
+    this.pitchDeg = 0;
+
+    // --- Smoothing targets ---
+    this.yawTarget = this.yawDeg;
+    this.pitchTarget = this.pitchDeg;
+
+    // smoothing factor (0..1). higher = snappier, lower = smoother
+    this.lookSmoothing = 0.22;
+
+    this.at  = new Vector3([16, 2, 27]);
 
     this.viewMatrix = new Matrix4();
     this.projectionMatrix = new Matrix4();
 
+    this.recomputeAt();
     this.updateView();
     this.updateProjection();
+  }
+
+  // Convert yaw/pitch into forward, then at = eye + forward
+  recomputeAt() {
+    const yaw = (this.yawDeg * Math.PI) / 180;
+    const pitch = (this.pitchDeg * Math.PI) / 180;
+
+    const fx = Math.cos(pitch) * Math.cos(yaw);
+    const fy = Math.sin(pitch);
+    const fz = Math.cos(pitch) * Math.sin(yaw);
+
+    const forward = new Vector3([fx, fy, fz]);
+    forward.normalize();
+
+    const newAt = new Vector3();
+    newAt.set(this.eye);
+    newAt.add(forward);
+    this.at = newAt;
   }
 
   updateProjection() {
@@ -93,70 +130,86 @@ class Camera {
     this.viewMatrix.setLookAt(e[0], e[1], e[2], a[0], a[1], a[2], u[0], u[1], u[2]);
   }
 
-  // helper: forward direction (normalized)
-  forwardDir() {
-    const f = new Vector3();
-    f.set(this.at);
-    f.sub(this.eye);
+  // --- Look controls ---
+  addLookDelta(deltaYawDeg, deltaPitchDeg) {
+    this.yawTarget += deltaYawDeg;
+    this.pitchTarget += deltaPitchDeg;
+
+    const limit = 89.0;
+    if (this.pitchTarget > limit) this.pitchTarget = limit;
+    if (this.pitchTarget < -limit) this.pitchTarget = -limit;
+  }
+
+  // Small helper: wrap an angle difference to [-180, 180)
+  static shortestAngleDelta(targetDeg, currentDeg) {
+    let d = targetDeg - currentDeg;
+    d = ((d + 180) % 360 + 360) % 360 - 180;
+    return d;
+  }
+
+  // Call once per frame for smoothing
+  updateLook() {
+    const a = this.lookSmoothing;
+
+    // Move yaw by the shortest delta (prevents seam snaps)
+    const dyaw = Camera.shortestAngleDelta(this.yawTarget, this.yawDeg);
+    this.yawDeg += dyaw * a;
+
+    // Pitch is fine to lerp directly (it's clamped, no wrap)
+    this.pitchDeg = this.pitchDeg + (this.pitchTarget - this.pitchDeg) * a;
+
+    this.recomputeAt();
+    this.updateView();
+  }
+
+
+  // --- Movement (use yaw only, stay on XZ plane) ---
+  forwardDirXZ() {
+    const yaw = (this.yawDeg * Math.PI) / 180;
+    const fx = Math.cos(yaw);
+    const fz = Math.sin(yaw);
+    const f = new Vector3([fx, 0, fz]);
     f.normalize();
     return f;
   }
 
   moveForward(speed = 0.15) {
-    const f = this.forwardDir();
+    const f = this.forwardDirXZ();
     f.mul(speed);
     this.eye.add(f);
-    this.at.add(f);
+    this.recomputeAt();
     this.updateView();
   }
 
   moveBackward(speed = 0.15) {
-    const b = this.forwardDir();
-    b.mul(-speed);
-    this.eye.add(b);
-    this.at.add(b);
-    this.updateView();
-  }
-
-  moveLeft(speed = 0.15) {
-    // left = up x forward
-    const f = this.forwardDir();
-    const s = Vector3.cross(this.up, f);
-    s.normalize();
-    s.mul(speed);
-    this.eye.add(s);
-    this.at.add(s);
+    const f = this.forwardDirXZ();
+    f.mul(-speed);
+    this.eye.add(f);
+    this.recomputeAt();
     this.updateView();
   }
 
   moveRight(speed = 0.15) {
-    // right = forward x up
-    const f = this.forwardDir();
-    const s = Vector3.cross(f, this.up);
+    const f = this.forwardDirXZ();
+    const s = Vector3.cross(f, this.up); // right
     s.normalize();
     s.mul(speed);
     this.eye.add(s);
-    this.at.add(s);
+    this.recomputeAt();
     this.updateView();
   }
 
-  panYaw(deg) {
-    // rotate forward vector around up axis
-    const f = this.forwardDir();
-    const rot = new Matrix4();
-    const u = this.up.elements;
-    rot.setRotate(deg, u[0], u[1], u[2]);
-    const f2 = rot.multiplyVector3(f);
-
-    // at = eye + f2
-    const newAt = new Vector3();
-    newAt.set(this.eye);
-    newAt.add(f2);
-
-    this.at = newAt;
+  moveLeft(speed = 0.15) {
+    const f = this.forwardDirXZ();
+    const s = Vector3.cross(this.up, f); // left
+    s.normalize();
+    s.mul(speed);
+    this.eye.add(s);
+    this.recomputeAt();
     this.updateView();
   }
 }
+
 
 // =================== Cube Geometry (pos + uv) ===================
 // Unit cube centered at origin? Easiest is a cube from (0,0,0) to (1,1,1) then you translate via modelMatrix.
@@ -276,6 +329,7 @@ function initTexture(texUnit, samplerUniform, url, onReadyFlagName) {
 
     textures[onReadyFlagName] = true;
   };
+  image.crossOrigin = "anonymous";
   image.src = url;
 }
 
@@ -289,16 +343,49 @@ function setupInput() {
     canvas.requestPointerLock?.();
   });
 
+  let ignoreMouseUntil = 0;
+
   document.addEventListener("pointerlockchange", () => {
     pointerLocked = (document.pointerLockElement === canvas);
+
+    const now = performance.now();
+    // ignore deltas briefly after lock/unlock to skip the "bad first event"
+    ignoreMouseUntil = now + 120;
+
+    lastMouseT = now;
   });
 
   document.addEventListener("mousemove", (e) => {
     if (!pointerLocked) return;
-    // horizontal mouse movement -> yaw
+
+    const now = performance.now();
+    if (now < ignoreMouseUntil) return;
+
+    const dt = now - lastMouseT;
+    lastMouseT = now;
+
+    let dx = e.movementX || 0;
+    let dy = e.movementY || 0;
+
+    // If the browser hitches, dump the event
+    if (dt > 80) return;
+
+    // Clamp mouse deltas
+    const MAX_DELTA = 60; // a bit tighter than 80 tends to feel nicer
+    dx = Math.max(-MAX_DELTA, Math.min(MAX_DELTA, dx));
+    dy = Math.max(-MAX_DELTA, Math.min(MAX_DELTA, dy));
+
     const sensitivity = 0.12;
-    camera.panYaw(e.movementX * sensitivity);
+    const sx = (invertMouseX ? -1 : 1) * sensitivity;
+    const sy = (invertMouseY ? -1 : 1) * sensitivity;
+
+
+    const dtScale = Math.max(0.5, Math.min(2.0, dt / 16.67));
+    camera.addLookDelta(dx * sx * dtScale, dy * sy * dtScale);
   });
+
+
+
 }
 
 function handleKeys() {
@@ -306,9 +393,12 @@ function handleKeys() {
   if (keys["s"]) camera.moveBackward();
   if (keys["a"]) camera.moveLeft();
   if (keys["d"]) camera.moveRight();
-  if (keys["q"]) camera.panYaw(2.0);
-  if (keys["e"]) camera.panYaw(-2.0);
+
+  // consistent with mouse: adjust yaw target
+  if (keys["q"]) camera.addLookDelta(-2.0, 0.0);
+  if (keys["e"]) camera.addLookDelta(2.0, 0.0);
 }
+
 
 // =================== Rendering ===================
 function drawScene() {
@@ -375,12 +465,14 @@ function drawScene() {
 // =================== Main Loop ===================
 function tick() {
   handleKeys();
+  camera.updateLook();
   drawScene();
   requestAnimationFrame(tick);
 }
 
 // =================== Resize ===================
 function resizeCanvasToDisplaySize() {
+  if (pointerLocked) return; // don't resize mid-lock
   const dpr = window.devicePixelRatio || 1;
   const w = Math.floor(canvas.clientWidth * dpr);
   const h = Math.floor(canvas.clientHeight * dpr);
@@ -388,7 +480,7 @@ function resizeCanvasToDisplaySize() {
     canvas.width = w;
     canvas.height = h;
     gl.viewport(0, 0, canvas.width, canvas.height);
-    camera.updateProjection();
+    if (camera) camera.updateProjection();
   }
 }
 
@@ -438,8 +530,8 @@ function main() {
 
   // textures (put images in asgn3/src/ or asgn3/ and update paths)
   // NOTE: Must be power-of-2 square images (e.g. 256x256).
-  initTexture(gl.TEXTURE0, u_Sampler0, "wall.jpg", "ready0");
-  initTexture(gl.TEXTURE1, u_Sampler1, "grass.jpg", "ready1");
+  initTexture(gl.TEXTURE0, u_Sampler0, "./wall.png", "ready0");
+  initTexture(gl.TEXTURE1, u_Sampler1, "./grass.png", "ready1");
 
   tick();
 }
