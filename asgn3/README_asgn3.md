@@ -1,6 +1,6 @@
 # AI Usage
 
-I used LLMs (e.g. ChatGPT) for this assignment. It was tremenously helpful on implementing alot of the various features that I wanted for this project. Almost 2k lines of code (sorry grader if you have to read all of it). Like for example I really wanted to get the physics right; being able to jump over blocks and going under them. 
+I used LLMs (e.g. ChatGPT) for this assignment. It was tremenously helpful on implementing alot of the various features that I wanted for this project. Almost 2k lines of code (sorry grader if you have to read all of it). Like for example I really wanted to get the physics right; being able to jump over blocks and going under them. Although it was still a big pain to code even with the help of an LLM. This is definitely the hardest assignment has of late.
 
 
 ---
