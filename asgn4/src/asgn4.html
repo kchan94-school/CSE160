@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>ASG4 - Voxel World</title>
+    <style>
+      body { margin: 0; overflow: hidden; background: #111; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      #hud {
+        position: fixed; left: 12px; top: 12px;
+        color: white; font-family: monospace; font-size: 13px;
+        background: rgba(0,0,0,0.35); padding: 8px 10px; border-radius: 8px;
+      }
+      #crosshair {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        width: 12px;
+        height: 12px;
+        transform: translate(-50%, -50%);
+        pointer-events: none;
+        z-index: 9999;
+      }
+
+      #crosshair::before,
+      #crosshair::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        background: rgba(255,255,255,0.85);
+        transform: translate(-50%, -50%);
+        border-radius: 1px;
+      }
+
+      #crosshair::before { /* horizontal */
+        width: 12px;
+        height: 2px;
+      }
+
+      #crosshair::after {  /* vertical */
+        width: 2px;
+        height: 12px;
+      }
+      #hotbar{
+        position: fixed;
+        left: 50%;
+        bottom: 18px;
+        transform: translateX(-50%);
+        display: flex;
+        gap: 10px;
+        padding: 10px 12px;
+        background: rgba(0,0,0,0.35);
+        border-radius: 12px;
+        z-index: 9999;
+        pointer-events: none; /* don't block clicks */
+        backdrop-filter: blur(2px);
+      }
+
+      .hotbar-slot{
+        width: 54px;
+        height: 54px;
+        border-radius: 10px;
+        border: 2px solid rgba(255,255,255,0.25);
+        box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+        display: grid;
+        place-items: center;
+        font-family: monospace;
+        color: rgba(255,255,255,0.85);
+        position: relative;
+      }
+
+      .hotbar-slot.selected{
+        border-color: rgba(255,255,255,0.95);
+        box-shadow: 0 0 0 2px rgba(80,170,255,0.65), 0 2px 12px rgba(0,0,0,0.55);
+      }
+
+      .hotbar-key{
+        position: absolute;
+        left: 6px;
+        bottom: 4px;
+        font-size: 12px;
+        opacity: 0.9;
+      }
+
+      .hotbar-label{
+        font-size: 12px;
+        opacity: 0.9;
+      }
+
+      .hotbar-slot {
+        overflow: hidden;
+      }
+
+      .hotbar-icon {
+        position: absolute;
+        inset: 0;
+        opacity: 0.55;
+        background-size: cover;
+        background-position: center;
+        filter: contrast(1.1) saturate(1.1);
+      }
+
+
+    </style>
+    <link rel="icon" href="data:,">
+  </head>
+
+  <body>
+    <div id="hud">
+      WASD: move • Q/E: turn • Mouse: look (click canvas) • Space: jump<br/>
+      Left click: remove • Right click: add • F: trigger poke <br/>
+      Middle-Click: pick block<br/>
+      <span id="modeLine">T: Day/Night/Auto • Mode: AUTO</span> <br/>
+      <span id="fpsLine">FPS: --</span>
+      <hr style="border-color: rgba(255,255,255,0.15)">
+      <button id="btnLighting">Lighting: ON</button>
+      <button id="btnNormals">Normals: OFF</button>
+      <br/><br/>
+      Light X <input id="lightX" type="range" min="0" max="32" step="0.1" value="16">
+      <br/>
+      Light Y <input id="lightY" type="range" min="0" max="12" step="0.1" value="6">
+      <br/>
+      Light Z <input id="lightZ" type="range" min="0" max="32" step="0.1" value="16">
+      <br/><br/>
+      <label><input id="lightAnim" type="checkbox"> Animate Light</label>
+      <br/>
+      Speed <input id="lightSpeed" type="range" min="0" max="1.5" step="0.01" value="0.35">
+      <br/>
+      Radius <input id="lightRadius" type="range" min="0" max="18" step="0.1" value="10">
+      <br/><br/>
+      Attenuation <input id="attenK" type="range" min="0" max="0.08" step="0.001" value="0.02"> <span id="attenVal">0.020</span>
+      <br/><br/>
+      Light Color
+      <input id="lightColor" type="color" value="#ffffff">
+      <br/>
+      <button id="btnPoint">Point Light: ON</button>
+      <button id="btnSpot">Spot Light: ON</button>
+      <br/><br/>
+      Spot Angle <input id="spotAngle" type="range" min="5" max="60" step="1" value="18">
+      <br/>
+      Spot Softness <input id="spotSoft" type="range" min="0" max="20" step="1" value="6">
+    </div>
+
+
+
+    <canvas id="webgl"></canvas>
+
+    <div id="crosshair"></div>
+    <div id="hotbar"></div>
+    
+    <!-- libs -->
+    <script src="lib/webgl-utils.js"></script>
+    <script src="lib/webgl-debug.js"></script>
+    <script src="lib/cuon-utils.js"></script>
+    <script src="lib/cuon-matrix.js"></script>
+
+    <!-- main -->
+    <script src="asgn4.js"></script>
+
+  </body>
+</html>
