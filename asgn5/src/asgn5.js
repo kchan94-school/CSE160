@@ -51,7 +51,7 @@ const camera = new THREE.PerspectiveCamera(
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
@@ -66,12 +66,35 @@ const radarDistanceRing = document.getElementById("radarDistanceRing");
 const orbFill = document.getElementById("orbFill");
 const pushPrompt = document.getElementById("pushPrompt");
 const helpPanel = document.getElementById("helpPanel");
+const hudFPS = document.getElementById("fps");
+const pickupFlash = document.getElementById("pickupFlash");
 
+let pushShockwave = null;
+let pushShockwaveTimer = 0;
+let hitStop = 0;
+// -------------------- Reusable temp objects --------------------
+const TMP = {
+  v1: new THREE.Vector3(),
+  v2: new THREE.Vector3(),
+  v3: new THREE.Vector3(),
+  v4: new THREE.Vector3(),
+  v5: new THREE.Vector3(),
+  v6: new THREE.Vector3(),
+  v2a: new THREE.Vector2(),
+  v2b: new THREE.Vector2(),
+  ray1: new THREE.Raycaster(),
+  ray2: new THREE.Raycaster(),
+  ray3: new THREE.Raycaster(),
+};
+
+const colliderMeshes = [];
+const droneBlockerMeshes = [];
+const orbBursts = [];
 // -------------------- Custom pointer-lock FPS look --------------------
 const player = new THREE.Object3D();
 const pitchObject = new THREE.Object3D();
 
-player.position.set(0, 1.8, 14);
+player.position.set(0, 1.8, 20);
 scene.add(player);
 
 player.add(pitchObject);
@@ -148,7 +171,7 @@ scene.add(dirLight);
 // 4) Central point light
 const altarLight = new THREE.PointLight(0xffd27a, 1.8, 60);
 altarLight.position.set(0, 5.5, 0);
-altarLight.castShadow = true;
+altarLight.castShadow = false;
 scene.add(altarLight);
 
 // 5) Flashlight spot light
@@ -174,18 +197,6 @@ let flashlightOn = false;
   loader.setPath(ASSETS.skybox);
 
   loader.load(
-    // ["px.jpg", "nx.jpg", "py.jpg", "ny.jpg", "pz.jpg", "nz.jpg"],
-    (cubeTex) => {
-      scene.background = cubeTex;
-    },
-    undefined,
-    () => {
-      scene.background = new THREE.Color(0x0b1022);
-      console.warn("Skybox not found. Using fallback background.");
-    }
-  );
-  loader.load(
-    // ["px.jpg", "nx.jpg", "py.jpg", "ny.jpg", "pz.jpg", "nz.jpg"],
     ["px.jpg", "nx.jpg", "py.jpg", "ny.jpg", "pz.jpg", "nz.jpg"],
     (cubeTex) => {
       scene.background = cubeTex;
@@ -241,6 +252,73 @@ textureLoader.load(
 );
 
 // -------------------- Helpers --------------------
+function triggerOrbHudPulse() {
+  const orbCard = document.querySelector(".orbCard");
+
+  if (orbCard) {
+    orbCard.classList.remove("collectPulse");
+    void orbCard.offsetWidth;
+    orbCard.classList.add("collectPulse");
+  }
+
+  if (orbFill) {
+    orbFill.classList.remove("collectPulse");
+    void orbFill.offsetWidth;
+    orbFill.classList.add("collectPulse");
+  }
+}
+
+function triggerPickupFlash() {
+  if (!pickupFlash) return;
+
+  pickupFlash.classList.remove("show");
+  void pickupFlash.offsetWidth; // restart animation
+  pickupFlash.classList.add("show");
+
+  setTimeout(() => {
+    pickupFlash.classList.remove("show");
+  }, 160);
+}
+
+function spawnOrbBurst(position) {
+  const burst = new THREE.Mesh(
+    new THREE.SphereGeometry(0.22, 12, 12),
+    new THREE.MeshBasicMaterial({
+      color: 0x9affea,
+      transparent: true,
+      opacity: 0.95,
+    })
+  );
+
+  burst.position.copy(position);
+  burst.scale.setScalar(0.6);
+  burst.userData.life = 0.35;
+  burst.userData.maxLife = 0.35;
+
+  scene.add(burst);
+  orbBursts.push(burst);
+}
+
+function triggerPushShockwave() {
+  if (!pushShockwave) {
+    const geo = new THREE.RingGeometry(0.6, 0.75, 32);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xffa060,
+      transparent: true,
+      opacity: 0.9,
+      side: THREE.DoubleSide
+    });
+
+    pushShockwave = new THREE.Mesh(geo, mat);
+    pushShockwave.rotation.x = -Math.PI / 2;
+    scene.add(pushShockwave);
+  }
+
+  pushShockwave.position.copy(drone.position);
+  pushShockwaveTimer = 0.35;
+  pushShockwave.visible = true;
+  pushShockwave.scale.setScalar(1);
+}
 
 function computeDroneAvoidance(desiredDir) {
   const avoidance = new THREE.Vector3();
@@ -270,7 +348,7 @@ function computeDroneAvoidance(desiredDir) {
     feelerLen
   );
 
-  const blockerMeshes = droneBlockerBoxes.map((c) => c.mesh);
+  const blockerMeshes = droneBlockerMeshes;
 
   const hitForward = rayForward.intersectObjects(blockerMeshes, false);
   const hitLeft = rayLeft.intersectObjects(blockerMeshes, false);
@@ -370,9 +448,11 @@ function addCollider(mesh, options = {}) {
   };
 
   colliderBoxes.push(entry);
+  colliderMeshes.push(mesh);
 
   if (blocksDrone) {
     droneBlockerBoxes.push(entry);
+    droneBlockerMeshes.push(mesh);
   }
 }
 
@@ -408,21 +488,77 @@ function isDronePushable(playerPos) {
   return facing >= 0.70;
 }
 
-function droneHasLineOfSight(playerPos) {
-  const origin = drone.position.clone();
-  const target = playerPos.clone();
-  target.y -= 0.9; // aim near player's center
-
-  const dir = new THREE.Vector3().subVectors(target, origin);
+function hasClearVisibility(origin, target, occluderMeshes, epsilon = 0.08) {
+  const dir = TMP.v1.subVectors(target, origin);
   const dist = dir.length();
+
   if (dist < 0.001) return true;
 
   dir.normalize();
 
-  const ray = new THREE.Raycaster(origin, dir, 0, dist);
-  const hits = ray.intersectObjects(colliderBoxes.map((c) => c.mesh), false);
+  TMP.ray1.set(origin, dir);
+  TMP.ray1.near = 0;
+  TMP.ray1.far = Math.max(0, dist - epsilon);
 
+  const hits = TMP.ray1.intersectObjects(occluderMeshes, false);
   return hits.length === 0;
+}
+
+function droneHasLineOfSight(playerPos) {
+  const occluders = colliderMeshes;
+
+  // Use a more reliable "body center" point for the player.
+  const playerChest = playerPos.clone().add(new THREE.Vector3(0, -0.9, 0));
+  const playerUpper = playerPos.clone().add(new THREE.Vector3(0, -0.45, 0));
+  const playerLower = playerPos.clone().add(new THREE.Vector3(0, -1.35, 0));
+
+  // Drone sight origins.
+  const droneCenter = drone.position.clone();
+  const droneUpper = drone.position.clone().add(new THREE.Vector3(0, 0.2, 0));
+  const droneLower = drone.position.clone().add(new THREE.Vector3(0, -0.2, 0));
+
+  // Strong requirement:
+  // if center-to-chest is blocked, treat that as no LOS unless multiple
+  // other body rays are also clear.
+  const centerChestClear = hasClearVisibility(droneCenter, playerChest, occluders, 0.12);
+
+  if (centerChestClear) return true;
+
+  let clearCount = 0;
+  const droneSamples = [droneCenter, droneUpper, droneLower];
+  const playerSamples = [playerUpper, playerChest, playerLower];
+
+  for (const from of droneSamples) {
+    for (const to of playerSamples) {
+      if (hasClearVisibility(from, to, occluders, 0.18)) {
+        clearCount++;
+      }
+    }
+  }
+
+  // Require a lot more agreement than before.
+  return clearCount >= 4;
+}
+
+function playerHasLineOfSightToDrone() {
+  const occluders = colliderBoxes.map((c) => c.mesh);
+  const camPos = camera.getWorldPosition(new THREE.Vector3());
+
+  const droneSamples = [
+    drone.position.clone(),
+    drone.position.clone().add(new THREE.Vector3(0, 0.22, 0)),
+    drone.position.clone().add(new THREE.Vector3(0, -0.22, 0)),
+  ];
+
+  let visibleCount = 0;
+
+  for (const sample of droneSamples) {
+    if (hasClearVisibility(camPos, sample, occluders, 0.1)) {
+      visibleCount++;
+    }
+  }
+
+  return visibleCount >= 1;
 }
 
 // -------------------- Floor tiles --------------------
@@ -651,7 +787,7 @@ function droneHasLineOfSight(playerPos) {
 
     const light = new THREE.PointLight(0xffb45c, 1.1, 18);
     light.position.set(x, y + 1.35, z);
-    light.castShadow = true;
+    light.castShadow = false;
     scene.add(light);
   }
 })();
@@ -704,7 +840,7 @@ const orbMat = new THREE.MeshStandardMaterial({
     [-8, 2.5, -13],
     [8, 2.7, -13],
     [0, 5.7, 0],
-    [0, 1.5, 14],
+    [0, 1.5, 12],
   ];
 
   for (let i = 0; i < GAME.orbCount; i++) {
@@ -767,6 +903,10 @@ const droneState = {
   lastFlatDistToPlayer: Infinity,
   stuckTimer: 0,
   bypassSign: 1,
+  losConfirmTimer: 0,
+  staggerTimer: 0,
+  stunTimer: 0,
+  intensity: 3.0,
 };
 
 let playerInvulnTimer = 0;
@@ -953,11 +1093,25 @@ function collectOrb(orb) {
     clearOrbHighlight();
   }
 
+  const pickupPos = orb.position.clone();
+
+  spawnOrbBurst(pickupPos);
+  triggerPickupFlash();
+  triggerOrbHudPulse();
+  hitStop = Math.max(hitStop, 0.018);
+
   orb.visible = false;
   collected++;
+  if (collected === GAME.orbCount - 1 && pickupFlash) {
+    pickupFlash.textContent = "FINAL ORB";
+    setTimeout(() => {
+      pickupFlash.textContent = "+1 ORB";
+    }, 220);
+  }
   updateOrbUI();
 
   if (collected >= GAME.orbCount) {
+    if (pickupFlash) pickupFlash.textContent = "ALL RELICS RECOVERED";
     endGame(true);
   }
 }
@@ -1205,6 +1359,15 @@ function tryPushDrone(playerPos) {
   droneState.graceTimer = Math.max(droneState.graceTimer, 0.6);
   droneState.pushCooldown = 0.5;
   droneState.lungeTimer = 0;
+  droneState.stunTimer = 0.5;
+  droneLight.intensity = 3.0;
+
+  // feel good/responsive effects
+  triggerPushShockwave();
+  crosshair.classList.add("hit");
+  setTimeout(() => crosshair.classList.remove("hit"), 120);
+  droneState.staggerTimer = 0.25;
+  hitStop = Math.max(hitStop, 0.018);
 }
 
 function enterChaseMode(duration = randBetween(1.8, 2.9)) {
@@ -1250,6 +1413,28 @@ function updateRadar(playerPos) {
 
   const angle =
     Math.atan2(target2.y, target2.x) - Math.atan2(forward2.y, forward2.x);
+
+  radarArrow.style.opacity = "1";
+  radarArrow.style.transform = `rotate(${angle}rad)`;
+
+  if (radarDistanceRing) {
+    radarDistanceRing.style.opacity = String(0.35 + 0.65 * distAlpha);
+    radarDistanceRing.style.transform = `scale(${ringScale})`;
+  }
+
+  if (droneState.stunTimer > 0) {
+    radarArrow.style.borderBottomColor = "#ffb36a";
+    radarArrow.style.filter = "drop-shadow(0 0 8px rgba(255,170,90,0.95))";
+    radarState.textContent = "STUN";
+    radarState.style.color = "#ffcaa0";
+    radarRing.style.borderColor = "rgba(255,185,130,0.95)";
+    radarRing.style.boxShadow = "0 0 16px rgba(120,60,0,0.22) inset";
+    if (radarDistanceRing) {
+      radarDistanceRing.style.borderColor = `rgba(255, 185, 120, ${0.22 + 0.55 * distAlpha})`;
+      radarDistanceRing.style.boxShadow = `0 0 ${6 + 10 * distAlpha}px rgba(255, 160, 90, 0.28)`;
+    }
+    return;
+  }
 
   radarArrow.style.opacity = "1";
   radarArrow.style.transform = `rotate(${angle}rad)`;
@@ -1309,12 +1494,41 @@ function updateRadar(playerPos) {
 // -------------------- Animation --------------------
 const clock = new THREE.Clock();
 let elapsed = 0;
+let fpsAccumulator = 0;
+let fpsFrames = 0;
 
 
 function animate() {
   requestAnimationFrame(animate);
 
-  const dt = Math.min(clock.getDelta(), 0.033);
+  let dt = Math.min(clock.getDelta(), 0.033);
+
+  if (hitStop > 0) {
+    hitStop -= dt;
+    dt *= 0.25;
+  }
+
+  // ---- FPS calculation ----
+  fpsAccumulator += dt;
+  fpsFrames++;
+
+  if (fpsAccumulator >= 0.5) {
+    const fps = Math.round(fpsFrames / fpsAccumulator);
+
+    hudFPS.textContent = fps;
+
+    // Color change based on performance
+    if (fps > 55) {
+      hudFPS.style.color = "#7cffd2";   // good
+    } else if (fps > 40) {
+      hudFPS.style.color = "#ffe07a";   // medium
+    } else {
+      hudFPS.style.color = "#ff6a6a";   // low
+    }
+
+    fpsAccumulator = 0;
+    fpsFrames = 0;
+  }
 
   if (!gameOver && controls.isLocked) {
     elapsed += dt;
@@ -1406,6 +1620,24 @@ function animate() {
       }
     }
 
+    for (let i = orbBursts.length - 1; i >= 0; i--) {
+      const burst = orbBursts[i];
+      burst.userData.life -= dt;
+
+      const t = 1 - burst.userData.life / burst.userData.maxLife;
+
+      burst.scale.setScalar(0.6 + t * 2.2);
+      burst.material.opacity = 1 - t;
+      burst.position.y += dt * 1.2;
+
+      if (burst.userData.life <= 0) {
+        scene.remove(burst);
+        burst.geometry.dispose();
+        burst.material.dispose();
+        orbBursts.splice(i, 1);
+      }
+    }
+
     // Trophy animation
     if (trophy) {
       trophy.rotation.y += dt * 0.55;
@@ -1426,7 +1658,11 @@ function animate() {
     
     droneState.playerSeenTimer = Math.max(0, droneState.playerSeenTimer - dt);
     droneState.searchTimer = Math.max(0, droneState.searchTimer - dt);
+    droneState.losConfirmTimer = Math.max(0, droneState.losConfirmTimer - dt);
+    droneState.stunTimer = Math.max(0, droneState.stunTimer - dt);
 
+    droneLight.intensity = THREE.MathUtils.lerp(droneLight.intensity, 0.8, 0.1);
+    
     hurtFlash.style.opacity =
       droneState.hurtFlashTimer > 0
         ? String(0.7 * (droneState.hurtFlashTimer / 0.5))
@@ -1443,6 +1679,30 @@ function animate() {
       }
 
       chaseFlash.style.opacity = String(Math.max(0, chaseOpacity));
+    }
+
+    if (pushShockwaveTimer > 0) {
+      pushShockwaveTimer -= dt;
+
+      const t = 1 - pushShockwaveTimer / 0.35;
+
+      pushShockwave.scale.setScalar(1 + t * 4);
+      pushShockwave.material.opacity = 1 - t;
+
+      if (pushShockwaveTimer <= 0) {
+        pushShockwave.visible = false;
+      }
+    }
+
+    if (droneState.staggerTimer > 0) {
+      droneState.staggerTimer -= dt;
+
+      const t = droneState.staggerTimer / 0.25;
+
+      const scale = 1 + 0.25 * Math.sin(t * Math.PI);
+      drone.scale.set(scale, 1 - 0.2 * t, scale);
+    } else {
+      drone.scale.set(1,1,1);
     }
 
     const droneToPlayer = new THREE.Vector3().subVectors(pos, drone.position);
@@ -1474,9 +1734,15 @@ function animate() {
     const hasLOS = droneHasLineOfSight(pos);
 
     if (hasLOS && distToPlayer < chaseRange) {
-      droneState.playerSeenTimer = THREE.MathUtils.lerp(1.8, 3.4, progress);
-      pickSearchTarget(pos);
-      droneState.searchTimer = THREE.MathUtils.lerp(2.4, 4.6, progress);
+      droneState.losConfirmTimer += dt;
+
+      if (droneState.losConfirmTimer >= 0.12) {
+        droneState.playerSeenTimer = THREE.MathUtils.lerp(1.0, 2.0, progress);
+        pickSearchTarget(pos);
+        droneState.searchTimer = THREE.MathUtils.lerp(1.4, 2.6, progress);
+      }
+    } else {
+      droneState.losConfirmTimer = 0;
     }
 
     // Decide state
@@ -1485,8 +1751,15 @@ function animate() {
     } else if (droneState.modeTimer <= 0) {
       let chaseProb = THREE.MathUtils.lerp(0.14, 0.34, progress);
 
-      if (hasLOS && distToPlayer < chaseRange) chaseProb += THREE.MathUtils.lerp(0.34, 0.52, progress);
-      if (droneState.playerSeenTimer > 0) chaseProb += THREE.MathUtils.lerp(0.16, 0.28, progress);
+      if (hasLOS && distToPlayer < chaseRange) {
+        chaseProb += THREE.MathUtils.lerp(0.34, 0.52, progress);
+      } else {
+        chaseProb -= 0.18;
+      }
+
+      if (droneState.playerSeenTimer > 0) {
+        chaseProb += THREE.MathUtils.lerp(0.08, 0.16, progress);
+      }
 
       if (distToPlayer < 10.0) chaseProb += THREE.MathUtils.lerp(0.06, 0.10, progress);
       if (distToPlayer < 7.0) chaseProb += THREE.MathUtils.lerp(0.10, 0.18, progress);

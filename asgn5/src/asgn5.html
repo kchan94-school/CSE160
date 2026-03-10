@@ -28,7 +28,7 @@
 
       .hudStats {
         display: grid;
-        grid-template-columns: repeat(3, minmax(92px, 1fr));
+        grid-template-columns: repeat(4, minmax(92px, 1fr));
         gap: 10px;
       }
 
@@ -69,6 +69,11 @@
         margin-left: 3px;
         opacity: 0.7;
         font-weight: 700;
+      }
+
+      .fpsCard .statValue {
+        color: #a8e8ff;
+        text-shadow: 0 0 14px rgba(120,200,255,0.2);
       }
 
       #hudHint {
@@ -273,6 +278,14 @@
         box-shadow: 0 0 8px rgba(120,255,210,0.9);
       }
 
+      #crosshair.hit::before,
+      #crosshair.hit::after {
+        background: #ffb36a;
+        box-shadow:
+          0 0 14px rgba(255,170,90,1),
+          0 0 30px rgba(255,120,40,0.7);
+      }
+
       #hurtFlash {
         position: fixed;
         inset: 0;
@@ -441,6 +454,7 @@
         transform: scale(1.18);
         filter: drop-shadow(0 0 10px rgba(255, 120, 70, 0.95));
       }
+
       #pushPrompt {
         position: fixed;
         left: 50%;
@@ -484,6 +498,73 @@
             0 0 28px rgba(255,120,70,0.42),
             0 0 40px rgba(255,90,40,0.18),
             inset 0 0 14px rgba(255,200,140,0.18);
+        }
+      }
+
+      #pickupFlash {
+        position: fixed;
+        left: 50%;
+        top: calc(50% - 54px);
+        transform: translateX(-50%) translateY(8px) scale(0.96);
+        z-index: 7;
+        pointer-events: none;
+        color: #b8fff0;
+        font-size: 20px;
+        font-weight: 900;
+        letter-spacing: 0.10em;
+        opacity: 0;
+        text-shadow:
+          0 0 10px rgba(120,255,210,0.75),
+          0 0 22px rgba(120,255,210,0.35);
+        transition:
+          opacity 0.12s ease,
+          transform 0.12s ease;
+      }
+
+      #pickupFlash.show {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0px) scale(1);
+      }
+
+      .orbCard.collectPulse {
+        animation: orbCollectPulse 0.28s ease;
+      }
+
+      @keyframes orbCollectPulse {
+        0% {
+          transform: scale(1);
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.06),
+            0 6px 18px rgba(0,0,0,0.22);
+        }
+        35% {
+          transform: scale(1.06);
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.06),
+            0 0 18px rgba(120,255,210,0.28),
+            0 6px 18px rgba(0,0,0,0.22);
+        }
+        100% {
+          transform: scale(1);
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.06),
+            0 6px 18px rgba(0,0,0,0.22);
+        }
+      }
+
+      .orbFill.collectPulse {
+        animation: orbFillPulse 0.25s ease;
+      }
+
+      @keyframes orbFillPulse {
+        0% {
+          filter: brightness(1);
+        }
+        50% {
+          filter: brightness(1.7);
+        }
+        100% {
+          filter: brightness(1);
         }
       }
 
@@ -535,6 +616,11 @@
             <div id="healthFill" class="healthFill"></div>
           </div>
         </div>
+
+        <div class="statCard fpsCard">
+          <div class="statLabel">FPS</div>
+          <div class="statValue"><span id="fps">0</span></div>
+        </div>
       </div>
 
       <div id="hudHint">Tab = Help</div>
@@ -562,6 +648,7 @@
 
     <div id="crosshair"></div>
     <div id="pushPrompt">PRESS E TO PUSH DRONE</div>
+    <div id="pickupFlash">+1 ORB</div>
 
     <div id="centerMessage">
       <div id="centerCard">
