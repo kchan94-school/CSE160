@@ -1,0 +1,594 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Asgn5 - Temple Relic Hunt</title>
+
+    <style>
+      html, body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+      }
+
+      body {
+        font-family: system-ui, Arial, sans-serif;
+      }
+
+      #hud {
+        position: fixed;
+        left: 12px;
+        top: 12px;
+        z-index: 6;
+        color: white;
+        user-select: none;
+      }
+
+      .hudStats {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(92px, 1fr));
+        gap: 10px;
+      }
+
+      .statCard {
+        min-width: 96px;
+        background: linear-gradient(180deg, rgba(255,255,255,0.12), rgba(255,255,255,0.04));
+        border: 1px solid rgba(255,255,255,0.14);
+        border-radius: 14px;
+        padding: 10px 12px;
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,0.06),
+          0 6px 18px rgba(0,0,0,0.22);
+        backdrop-filter: blur(4px);
+      }
+
+      .statLabel {
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        opacity: 0.82;
+        margin-bottom: 6px;
+      }
+
+      .statValue {
+        font-size: 28px;
+        font-weight: 900;
+        line-height: 1;
+        text-shadow: 0 0 12px rgba(255,255,255,0.08);
+      }
+
+      .statSlash {
+        opacity: 0.55;
+        margin: 0 2px;
+      }
+
+      .statUnit {
+        font-size: 15px;
+        margin-left: 3px;
+        opacity: 0.7;
+        font-weight: 700;
+      }
+
+      #hudHint {
+        margin-top: 8px;
+        margin-left: 4px;
+        display: inline-block;
+        padding: 5px 9px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        background: rgba(0,0,0,0.32);
+        border: 1px solid rgba(255,255,255,0.12);
+        color: rgba(255,255,255,0.88);
+      }
+
+      #helpPanel {
+        position: fixed;
+        left: 12px;
+        top: 118px;
+        width: 320px;
+        max-width: calc(100vw - 24px);
+        z-index: 6;
+        color: white;
+        background: rgba(10, 14, 28, 0.82);
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 14px;
+        padding: 14px 16px;
+        box-shadow: 0 10px 28px rgba(0,0,0,0.32);
+        backdrop-filter: blur(6px);
+      }
+
+      #helpPanel.hidden {
+        display: none;
+      }
+
+      .helpTitle {
+        font-size: 16px;
+        font-weight: 800;
+        margin-bottom: 10px;
+      }
+
+      .helpSection {
+        font-size: 13px;
+        line-height: 1.45;
+        opacity: 0.92;
+        margin-bottom: 10px;
+      }
+
+      .helpSection:last-child {
+        margin-bottom: 0;
+      }
+
+      .orbCard .statValue {
+        color: #8dffe2;
+        text-shadow: 0 0 14px rgba(124,255,210,0.22);
+      }
+
+      .timeCard .statValue {
+        color: #ffe7a2;
+        text-shadow: 0 0 14px rgba(255,220,120,0.18);
+      }
+
+      .healthCard .statValue {
+        color: #ff9a9a;
+        text-shadow: 0 0 14px rgba(255,90,90,0.20);
+      }
+
+      .healthBar {
+        margin-top: 9px;
+        height: 8px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.10);
+        overflow: hidden;
+        box-shadow: inset 0 0 8px rgba(0,0,0,0.25);
+      }
+
+      .healthFill {
+        height: 100%;
+        width: 100%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #ff5c5c, #ff9d6a);
+        box-shadow: 0 0 10px rgba(255,90,90,0.45);
+        transition: width 0.18s ease, filter 0.18s ease;
+      }
+
+      .healthCard.danger {
+        animation: healthDangerPulse 0.7s infinite alternate;
+      }
+
+      @keyframes healthDangerPulse {
+        from {
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.06),
+            0 6px 18px rgba(0,0,0,0.22);
+        }
+        to {
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.06),
+            0 0 20px rgba(255, 70, 70, 0.30),
+            0 6px 18px rgba(0,0,0,0.22);
+        }
+      }
+
+      .progressBar {
+        margin-top: 9px;
+        height: 8px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.10);
+        overflow: hidden;
+        box-shadow: inset 0 0 8px rgba(0,0,0,0.25);
+      }
+
+      .orbFill {
+        height: 100%;
+        width: 0%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #54ffd3, #b4fff1);
+        box-shadow: 0 0 10px rgba(124,255,210,0.35);
+        transition: width 0.18s ease;
+      }
+
+      #centerMessage {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        color: white;
+        text-align: center;
+        background: rgba(0, 0, 0, 0.38);
+        z-index: 4;
+      }
+
+      #centerMessage.hidden {
+        display: none;
+      }
+
+      #centerCard {
+        max-width: 560px;
+        margin: 20px;
+        padding: 24px 28px;
+        border-radius: 16px;
+        background: rgba(10, 14, 28, 0.75);
+        box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+      }
+
+      #centerCard .big {
+        font-size: 28px;
+        font-weight: 800;
+        margin-bottom: 8px;
+      }
+
+      #centerCard .mid {
+        font-size: 15px;
+        opacity: 0.94;
+      }
+
+      #centerCard .small {
+        margin-top: 12px;
+        font-size: 13px;
+        opacity: 0.78;
+      }
+
+      #crosshair {
+        position: fixed;
+        left: 50%;
+        top: 50%;
+        width: 12px;
+        height: 12px;
+        margin-left: -6px;
+        margin-top: -6px;
+        pointer-events: none;
+        z-index: 3;
+      }
+
+      #crosshair::before,
+      #crosshair::after {
+        content: "";
+        position: absolute;
+        background: rgba(255,255,255,0.92);
+      }
+
+      #crosshair::before {
+        left: 50%;
+        top: 0;
+        width: 2px;
+        height: 12px;
+        margin-left: -1px;
+      }
+
+      #crosshair::after {
+        top: 50%;
+        left: 0;
+        width: 12px;
+        height: 2px;
+        margin-top: -1px;
+      }
+
+      #crosshair.active::before,
+      #crosshair.active::after {
+        background: rgba(120,255,210,0.98);
+        box-shadow: 0 0 8px rgba(120,255,210,0.9);
+      }
+
+      #hurtFlash {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 8;
+        opacity: 0;
+        background:
+          radial-gradient(circle at center,
+            rgba(255, 80, 80, 0.00) 35%,
+            rgba(255, 60, 60, 0.16) 65%,
+            rgba(180, 0, 0, 0.34) 100%);
+        transition: opacity 0.08s linear;
+      }
+      #chaseFlash {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 7;
+        opacity: 0;
+        background:
+          linear-gradient(to bottom, rgba(255, 0, 0, 0.90), rgba(255, 0, 0, 0.00) 20%),
+          linear-gradient(to top,    rgba(255, 0, 0, 0.90), rgba(255, 0, 0, 0.00) 20%),
+          linear-gradient(to right,  rgba(255, 0, 0, 0.90), rgba(255, 0, 0, 0.00) 20%),
+          linear-gradient(to left,   rgba(255, 0, 0, 0.90), rgba(255, 0, 0, 0.00) 20%);
+        box-shadow:
+          inset 0 0 60px rgba(255, 0, 0, 0.55),
+          inset 0 0 120px rgba(255, 0, 0, 0.22);
+        transition: opacity 0.05s linear;
+      }
+
+      #radarDistanceRing {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 58px;
+        height: 58px;
+        margin-left: -29px;
+        margin-top: -29px;
+        border-radius: 50%;
+        border: 2px solid rgba(255,255,255,0.18);
+        box-shadow: 0 0 0 rgba(255,255,255,0);
+        transition:
+          transform 0.08s linear,
+          border-color 0.08s linear,
+          box-shadow 0.08s linear,
+          opacity 0.08s linear;
+        opacity: 0.7;
+      }
+
+
+      #radar {
+        position: fixed;
+        right: 18px;
+        top: 18px;
+        z-index: 6;
+        color: white;
+        text-align: center;
+        user-select: none;
+      }
+
+      #radarRing {
+        position: relative;
+        width: 88px;
+        height: 88px;
+        border-radius: 50%;
+        border: 2px solid rgba(255,255,255,0.75);
+        background: rgba(0,0,0,0.28);
+        box-shadow: 0 0 14px rgba(0,0,0,0.25) inset;
+      }
+
+      #radarArrow {
+        position: absolute;
+        left: 50%;
+        top: 10px;
+        width: 0;
+        height: 0;
+        margin-left: -8px;
+        border-left: 8px solid transparent;
+        border-right: 8px solid transparent;
+        border-bottom: 28px solid #7cffd2;
+        transform-origin: 50% 34px;
+        transition: transform 0.06s linear, filter 0.12s ease, opacity 0.12s ease;
+      }
+
+      #radarCenter {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 8px;
+        height: 8px;
+        margin-left: -4px;
+        margin-top: -4px;
+        border-radius: 50%;
+        background: rgba(255,255,255,0.9);
+      }
+
+      #radarState {
+        margin-top: 6px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+      }
+
+      body.game-over-death #centerMessage {
+        background:
+          radial-gradient(circle at center,
+            rgba(0, 0, 0, 0.58) 0%,
+            rgba(40, 0, 0, 0.72) 55%,
+            rgba(0, 0, 0, 0.88) 100%);
+      }
+
+      body.game-over-death #centerCard {
+        background: rgba(26, 8, 10, 0.88);
+        border: 1px solid rgba(255, 90, 90, 0.22);
+        box-shadow:
+          0 14px 45px rgba(0,0,0,0.58),
+          0 0 28px rgba(140, 0, 0, 0.22);
+      }
+
+      body.game-over-death #centerCard .big {
+        color: #ff9d9d;
+        text-shadow: 0 0 18px rgba(255, 80, 80, 0.22);
+      }
+
+      body.game-over-win #centerMessage {
+        background:
+          radial-gradient(circle at center,
+            rgba(0, 0, 0, 0.40) 0%,
+            rgba(20, 30, 10, 0.45) 55%,
+            rgba(0, 0, 0, 0.72) 100%);
+      }
+
+      body.game-over-win #centerCard {
+        background: rgba(12, 20, 14, 0.84);
+        border: 1px solid rgba(140, 255, 180, 0.18);
+        box-shadow:
+          0 14px 45px rgba(0,0,0,0.50),
+          0 0 24px rgba(80, 180, 90, 0.16);
+      }
+
+      .centerStatLine {
+        margin-top: 12px;
+        font-size: 15px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+      }
+
+      .centerHint {
+        margin-top: 14px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: rgba(255,255,255,0.06);
+        font-size: 13px;
+        opacity: 0.92;
+      }
+
+      #crosshair.pushable::before,
+      #crosshair.pushable::after {
+        background: rgba(255, 135, 80, 1);
+        box-shadow:
+          0 0 12px rgba(255, 120, 70, 1),
+          0 0 20px rgba(255, 80, 40, 0.55);
+      }
+
+      #crosshair.pushable {
+        transform: scale(1.18);
+        filter: drop-shadow(0 0 10px rgba(255, 120, 70, 0.95));
+      }
+      #pushPrompt {
+        position: fixed;
+        left: 50%;
+        top: calc(50% + 34px);
+        transform: translateX(-50%) scale(0.96);
+        z-index: 7;
+        pointer-events: none;
+        color: #fff1e6;
+        font-size: 16px;
+        font-weight: 900;
+        letter-spacing: 0.10em;
+        opacity: 0;
+        padding: 10px 16px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 170, 120, 0.45);
+        background: linear-gradient(180deg, rgba(255,120,70,0.28), rgba(120,20,0,0.24));
+        box-shadow:
+          0 0 20px rgba(255,120,70,0.28),
+          inset 0 0 12px rgba(255,180,120,0.14);
+        text-shadow: 0 0 12px rgba(255,140,90,0.45);
+        transition:
+          opacity 0.08s ease,
+          transform 0.08s ease,
+          box-shadow 0.08s ease;
+      }
+
+      #pushPrompt.show {
+        opacity: 1;
+        transform: translateX(-50%) scale(1);
+        animation: pushPromptPulse 0.6s infinite alternate;
+      }
+
+      @keyframes pushPromptPulse {
+        from {
+          box-shadow:
+            0 0 16px rgba(255,120,70,0.22),
+            inset 0 0 10px rgba(255,180,120,0.10);
+        }
+        to {
+          box-shadow:
+            0 0 28px rgba(255,120,70,0.42),
+            0 0 40px rgba(255,90,40,0.18),
+            inset 0 0 14px rgba(255,200,140,0.18);
+        }
+      }
+
+      #footerNote {
+        position: fixed;
+        right: 12px;
+        bottom: 12px;
+        color: rgba(255,255,255,0.88);
+        background: rgba(0,0,0,0.35);
+        padding: 8px 10px;
+        border-radius: 10px;
+        font-size: 12px;
+        z-index: 5;
+      }
+    </style>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.1/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.1/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+
+  <body>
+    <div id="hud">
+      <div class="hudStats">
+        <div class="statCard orbCard">
+          <div class="statLabel">ORBS</div>
+          <div class="statValue">
+            <span id="orbs">0</span><span class="statSlash">/</span><span id="orbsTotal">10</span>
+          </div>
+          <div class="progressBar">
+            <div id="orbFill" class="orbFill"></div>
+          </div>
+        </div>
+
+        <div class="statCard timeCard">
+          <div class="statLabel">TIME</div>
+          <div class="statValue"><span id="time">0.0</span><span class="statUnit">s</span></div>
+        </div>
+
+        <div class="statCard healthCard">
+          <div class="statLabel">HEALTH</div>
+          <div class="statValue"><span id="health">3</span></div>
+          <div class="healthBar">
+            <div id="healthFill" class="healthFill"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="hudHint">Tab = Help</div>
+    </div>
+
+    <div id="helpPanel" class="hidden">
+      <div class="helpTitle">Temple Relic Hunt</div>
+      <div class="helpSection">
+        <b>Objective:</b> Collect all glowing relic orbs while avoiding the drone.
+      </div>
+
+      <div class="helpSection">
+        <b>Controls:</b><br/>
+        Click = lock mouse • WASD = move • Space = jump • Shift = sprint<br/>
+        F = flashlight • E = push drone • Left Click = collect orb • Esc = unlock mouse
+      </div>
+
+      <div class="helpSection">
+        <b>Tips:</b><br/>
+        The radar points toward the drone.<br/>
+        Radar color shows patrol / chase / retreat.<br/>
+        Use the drone’s retreat window after taking damage or after pushing it away.
+      </div>
+    </div>
+
+    <div id="crosshair"></div>
+    <div id="pushPrompt">PRESS E TO PUSH DRONE</div>
+
+    <div id="centerMessage">
+      <div id="centerCard">
+        <div class="big">Click to Play</div>
+        <div class="mid">
+          Explore the temple, collect all glowing relic orbs, and avoid the hostile drone.
+        </div>
+        <div class="small">
+          WASD move • Space jump • Shift sprint • F flashlight • E push drone • Tab help
+        </div>
+      </div>
+    </div>
+
+    <div id="hurtFlash"></div>
+    <div id="chaseFlash"></div>
+
+    <div id="radar">
+      <div id="radarRing">
+        <div id="radarArrow"></div>
+        <div id="radarDistanceRing"></div>
+        <div id="radarCenter"></div>
+      </div>
+      <div id="radarState">PATROL</div>
+    </div>
+
+    <div id="footerNote">Asgn5 • Three.js • Perspective camera • Pointer-lock FPS</div>
+
+    <script type="module" src="./asgn5.js"></script>
+  </body>
+</html>
