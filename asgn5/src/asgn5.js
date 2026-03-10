@@ -8,7 +8,7 @@ const ASSETS = {
     wall: "./assets/textures/wall.jpg",
   },
   skybox: "./assets/skybox/", // expects px nx py ny pz nz with .jpg
-  model: "./assets/models/trophy.glb",
+  model: "./assets/models/Trophy.glb",
 };
 
 const GAME = {
